@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 -u
+#!/usr/bin/env -S python3 -u
 """
 This is heavily based on the NtripPerlClient program written by BKG.
 Then heavily based on a unavco original.
