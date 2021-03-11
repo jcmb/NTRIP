@@ -1,4 +1,4 @@
-#!/usr/bin/python -u
+#!/usr/bin/env python3 -u
 """
 This is heavily based on the NtripPerlClient program written by BKG.
 Then heavily based on a unavco original.
@@ -21,7 +21,7 @@ factor=2 # How much the sleep time increases with each failed attempt
 maxReconnect=1
 maxReconnectTime=1200
 sleepTime=1 # So the first one is 1 second
-maxConnectTime=0
+
 
 
 class NtripClient(object):
@@ -42,9 +42,11 @@ class NtripClient(object):
                  V2=False,
                  headerFile=sys.stderr,
                  headerOutput=False,
+                 maxConnectTime=0
                  ):
         self.buffer=buffer
-        self.user=base64.b64encode(user)
+        self.user=base64.b64encode(bytes(user,'utf-8')).decode("utf-8")
+        print(self.user)
         self.out=out
         self.port=port
         self.caster=caster
@@ -92,7 +94,7 @@ class NtripClient(object):
         self.lonMin=(lon-self.lonDeg)*60
         self.latMin=(lat-self.latDeg)*60
 
-    def getMountPointString(self):
+    def getMountPointBytes(self):
         mountPointString = "GET %s HTTP/1.1\r\nUser-Agent: %s\r\nAuthorization: Basic %s\r\n" % (self.mountpoint, useragent, self.user)
 #        mountPointString = "GET %s HTTP/1.1\r\nUser-Agent: %s\r\n" % (self.mountpoint, useragent)
         if self.host or self.V2:
@@ -102,17 +104,17 @@ class NtripClient(object):
            mountPointString+="Ntrip-Version: Ntrip/2.0\r\n"
         mountPointString+="\r\n"
         if self.verbose:
-           print mountPointString
-        return mountPointString
+           print (mountPointString)
+        return bytes(mountPointString,'ascii')
 
-    def getGGAString(self):
+    def getGGABytes(self):
         now = datetime.datetime.utcnow()
         ggaString= "GPGGA,%02d%02d%04.2f,%02d%011.8f,%1s,%03d%011.8f,%1s,1,05,0.19,+00400,M,%5.3f,M,," % \
             (now.hour,now.minute,now.second,self.latDeg,self.latMin,self.flagN,self.lonDeg,self.lonMin,self.flagE,self.height)
         checksum = self.calcultateCheckSum(ggaString)
         if self.verbose:
-            print  "$%s*%s\r\n" % (ggaString, checksum)
-        return "$%s*%s\r\n" % (ggaString, checksum)
+            print  ("$%s*%s\r\n" % (ggaString, checksum))
+        return bytes("$%s*%s\r\n" % (ggaString, checksum),'ascii')
 
     def calcultateCheckSum(self, stringToCheck):
         xsum_calc = 0
@@ -124,7 +126,7 @@ class NtripClient(object):
         reconnectTry=1
         sleepTime=1
         reconnectTime=0
-        if maxConnectTime > 0 :
+        if self.maxConnectTime > 0 :
             EndConnect=datetime.timedelta(seconds=maxConnectTime)
         try:
             while reconnectTry<=maxReconnect:
@@ -142,10 +144,11 @@ class NtripClient(object):
                     connectTime=datetime.datetime.now()
 
                     self.socket.settimeout(10)
-                    self.socket.sendall(self.getMountPointString())
+                    self.socket.sendall(self.getMountPointBytes())
                     while not found_header:
                         casterResponse=self.socket.recv(4096) #All the data
-                        header_lines = casterResponse.split("\r\n")
+                        print(casterResponse)
+                        header_lines = casterResponse.decode('utf-8').split("\r\n")
 
                         for line in header_lines:
                             if line=="":
@@ -174,13 +177,13 @@ class NtripClient(object):
                                 sys.exit(2)
                             elif line.find("ICY 200 OK")>=0:
                                 #Request was valid
-                                self.socket.sendall(self.getGGAString())
+                                self.socket.sendall(self.getGGABytes())
                             elif line.find("HTTP/1.0 200 OK")>=0:
                                 #Request was valid
-                                self.socket.sendall(self.getGGAString())
+                                self.socket.sendall(self.getGGABytes())
                             elif line.find("HTTP/1.1 200 OK")>=0:
                                 #Request was valid
-                                self.socket.sendall(self.getGGAString())
+                                self.socket.sendall(self.getGGABytes())
 
 
 
@@ -188,7 +191,7 @@ class NtripClient(object):
                     while data:
                         try:
                             data=self.socket.recv(self.buffer)
-                            self.out.write(data)
+                            self.out.buffer.write(data)
                             if self.UDP_socket:
                                 self.UDP_socket.sendto(data, ('<broadcast>', self.UDP_Port))
 #                            print datetime.datetime.now()-connectTime
@@ -197,6 +200,8 @@ class NtripClient(object):
                                     if self.verbose:
                                         sys.stderr.write("Connection Timed exceeded\n")
                                     sys.exit(0)
+#                            self.socket.sendall(self.getGGAString())
+
 
 
                         except socket.timeout:
@@ -220,12 +225,15 @@ class NtripClient(object):
 
                         if sleepTime>maxReconnectTime:
                             sleepTime=maxReconnectTime
+                    else:
+                        sys.exit(1)
+
 
                     reconnectTry += 1
                 else:
                     self.socket=None
                     if self.verbose:
-                        print "Error indicator: ", error_indicator
+                        print ("Error indicator: ", error_indicator)
 
                     if reconnectTry < maxReconnect :
                         sys.stderr.write( "%s No Connection to NtripCaster.  Trying again in %i seconds\n" % (datetime.datetime.now(), sleepTime))
@@ -276,7 +284,7 @@ if __name__ == '__main__':
 
     if options.org:
         if len(args) != 1 :
-            print "Incorrect number of arguments for IBSS\n"
+            print ("Incorrect number of arguments for IBSS\n")
             parser.print_help()
             sys.exit(1)
         ntripArgs['user']=options.user+"."+options.org + ":" + options.password
@@ -292,7 +300,7 @@ if __name__ == '__main__':
 
     else:
         if len(args) != 3 :
-            print "Incorrect number of arguments for NTRIP\n"
+            print ("Incorrect number of arguments for NTRIP\n")
             parser.print_help()
             sys.exit(1)
         ntripArgs['user']=options.user+":"+options.password
@@ -315,27 +323,28 @@ if __name__ == '__main__':
     maxConnectTime=options.maxConnectTime
 
     if options.verbose:
-        print "Server: " + ntripArgs['caster']
-        print "Port: " + str(ntripArgs['port'])
-        print "User: " + ntripArgs['user']
-        print "mountpoint: " +ntripArgs['mountpoint']
-        print "Reconnects: " + str(maxReconnect)
-        print "Max Connect Time: " + str (maxConnectTime)
+        print ("Server: " + ntripArgs['caster'])
+        print ("Port: " + str(ntripArgs['port']))
+        print ("User: " + ntripArgs['user'])
+        print ("mountpoint: " +ntripArgs['mountpoint'])
+        print ("Reconnects: " + str(maxReconnect))
+        print ("Max Connect Time: " + str (maxConnectTime))
         if ntripArgs['V2']:
-            print "NTRIP: V2"
+            print ("NTRIP: V2")
         else:
-            print "NTRIP: V1 "
+            print ("NTRIP: V1")
         if ntripArgs["ssl"]:
-            print "SSL Connection"
+            print ("SSL Connection")
         else:
-            print "Uncrypted Connection"
-        print ""
+            print ("Uncrypted Connection")
+        print ("")
 
 
 
     fileOutput=False
+
     if options.outputFile:
-        f = open(options.outputFile, 'w')
+        f = open(options.outputFile, 'wb')
         ntripArgs['out']=f
         fileOutput=True
 
