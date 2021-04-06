@@ -2,6 +2,17 @@
 """
 This is heavily based on the NtripPerlClient program written by BKG.
 Then heavily based on a unavco original.
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
 """
 
 import socket
@@ -46,7 +57,7 @@ class NtripClient(object):
                  ):
         self.buffer=buffer
         self.user=base64.b64encode(bytes(user,'utf-8')).decode("utf-8")
-        print(self.user)
+#        print(self.user)
         self.out=out
         self.port=port
         self.caster=caster
@@ -147,7 +158,7 @@ class NtripClient(object):
                     self.socket.sendall(self.getMountPointBytes())
                     while not found_header:
                         casterResponse=self.socket.recv(4096) #All the data
-                        print(casterResponse)
+#                        print(casterResponse)
                         header_lines = casterResponse.decode('utf-8').split("\r\n")
 
                         for line in header_lines:
@@ -284,7 +295,7 @@ if __name__ == '__main__':
 
     if options.org:
         if len(args) != 1 :
-            print ("Incorrect number of arguments for IBSS\n")
+            print ("Incorrect number of arguments for IBSS. You do not need to provide the server and port\n")
             parser.print_help()
             sys.exit(1)
         ntripArgs['user']=options.user+"."+options.org + ":" + options.password
