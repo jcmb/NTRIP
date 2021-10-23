@@ -20,11 +20,12 @@ import sys
 import datetime
 import base64
 import time
+import os
 #import ssl
 from optparse import OptionParser
 
 
-version=0.2
+version=0.3
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 
 # reconnect parameter (fixed values):
@@ -138,7 +139,7 @@ class NtripClient(object):
         sleepTime=1
         reconnectTime=0
         if self.maxConnectTime > 0 :
-            EndConnect=datetime.timedelta(seconds=maxConnectTime)
+            EndConnect=datetime.timedelta(seconds=self.maxConnectTime)
         try:
             while reconnectTry<=maxReconnect:
                 found_header=False
@@ -202,14 +203,16 @@ class NtripClient(object):
                     while data:
                         try:
                             data=self.socket.recv(self.buffer)
-                            self.out.buffer.write(data)
+                            self.out.write(data)
+#                            self.out.buffer.write(data)
                             if self.UDP_socket:
                                 self.UDP_socket.sendto(data, ('<broadcast>', self.UDP_Port))
-#                            print datetime.datetime.now()-connectTime
-                            if maxConnectTime :
+#                            print (datetime.datetime.now()-connectTime)
+#                            print(self.maxConnectTime)
+                            if self.maxConnectTime :
                                 if datetime.datetime.now() > connectTime+EndConnect:
                                     if self.verbose:
-                                        sys.stderr.write("Connection Timed exceeded\n")
+                                        sys.stderr.write("Connection Time exceeded\n")
                                     sys.exit(0)
 #                            self.socket.sendall(self.getGGAString())
 
@@ -260,8 +263,8 @@ class NtripClient(object):
             sys.exit()
 
 if __name__ == '__main__':
-    usage="NtripClient.py [options] [caster] [port] mountpoint"
-    parser=OptionParser(version=version, usage=usage)
+    usage="NtripClient.py [options] caster port mountpoint"
+    parser=OptionParser(version=str(version), usage=usage)
     parser.add_option("-u", "--user", type="string", dest="user", default="IBS", help="The Ntripcaster username.  Default: %default")
     parser.add_option("-p", "--password", type="string", dest="password", default="IBS", help="The Ntripcaster password. Default: %default")
     parser.add_option("-o", "--org", type="string", dest="org", help="Use IBSS and the provided organization for the user. Caster and Port are not needed in this case Default: %default")
@@ -270,6 +273,7 @@ if __name__ == '__main__':
     parser.add_option("-g", "--longitude", type="float", dest="lon", default=8.66, help="Your longitude.  Default: %default")
     parser.add_option("-e", "--height", type="float", dest="height", default=1200, help="Your ellipsoid height.  Default: %default")
     parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False, help="Verbose")
+    parser.add_option("-T", "--Tell", action="store_true", dest="tell", default=False, help="Tell Settings")
     parser.add_option("-s", "--ssl", action="store_true", dest="ssl", default=False, help="Use SSL for the connection")
     parser.add_option("-H", "--host", action="store_true", dest="host", default=False, help="Include host header, should be on for IBSS")
     parser.add_option("-r", "--Reconnect", type="int", dest="maxReconnect", default=1, help="Number of reconnections")
@@ -326,14 +330,19 @@ if __name__ == '__main__':
 
     ntripArgs['verbose']=options.verbose
     ntripArgs['headerOutput']=options.headerOutput
+    ntripArgs['maxConnectTime']=options.maxConnectTime
 
     if options.UDP:
          ntripArgs['UDP_Port']=int(options.UDP)
 
     maxReconnect=options.maxReconnect
     maxConnectTime=options.maxConnectTime
+    if maxConnectTime < 0:
+        sys.stderr.write("Max Connection Time must be >= 0\n")
+        sys.exit(1)
+        
 
-    if options.verbose:
+    if options.verbose or options.tell:
         print ("Server: " + ntripArgs['caster'])
         print ("Port: " + str(ntripArgs['port']))
         print ("User: " + ntripArgs['user'])
@@ -358,6 +367,9 @@ if __name__ == '__main__':
         f = open(options.outputFile, 'wb')
         ntripArgs['out']=f
         fileOutput=True
+    else:
+        stdout= os.fdopen(sys.stdout.fileno(), "wb", closefd=False,buffering=0)
+        ntripArgs['out']=stdout
 
     if options.headerFile:
         h = open(options.headerFile, 'w')
