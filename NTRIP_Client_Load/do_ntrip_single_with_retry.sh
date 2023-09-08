@@ -19,7 +19,7 @@ elapsed_seconds="$(expr $AFTER - $BEFORE)"
 while [ $elapsed_seconds -lt $TEST_TIME ]
 do
 #echo    curl -f -o $TMP_DATA_PATH/ntrip_$1.bin --connect-timeout 10 -m $(expr $TEST_TIME - $elapsed_seconds)   -H "Ntrip-Version: Ntrip/2.0" -H "User-Agent: NTRIP CURL_NTRIP_TEST/0.1" -u $USERNAME:$PASS$2  http://$CASTER/$BASE
-    curl -f -o $TMP_DATA_PATH/ntrip_$1.bin --connect-timeout 10 -m  $(expr $TEST_TIME - $elapsed_seconds)  -H "Ntrip-Version: Ntrip/2.0" -H "User-Agent: NTRIP CURL_NTRIP_TEST/0.1" -u $USERNAME:$PASS$2  http://$CASTER/$BASE &>/dev/null
+    curl -f -o $TMP_DATA_PATH/ntrip_$1.bin --connect-timeout 10 -m  $(expr $TEST_TIME - $elapsed_seconds)  -H "Ntrip-Version: Ntrip/2.0" -H "User-Agent: NTRIP CURL_NTRIP_TEST/0.1" -u $USERNAME:$PASS  http://$CASTER/$BASE &>/dev/null
     Result=$?
     CONNECTIONS=$(expr $CONNECTIONS + 1)
     AFTER="$(date +%s)"

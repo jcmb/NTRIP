@@ -6,7 +6,7 @@ rm ntrip_results.txt
 for ((i=FIRST_CLIENT; i <= LAST_CLIENT;i++))
 do
 #   echo NTRIP Connection $i
-if [ $ADD_NUMBER_TO_USER_PASS ]
+if [ $ADD_NUMBER_TO_USER ]
 then
 #   ./do_ntrip_single.sh $i $i  &
    ./do_ntrip_single_with_retry.sh $i $i  &
