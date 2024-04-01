@@ -11,7 +11,7 @@ my $Padding;
 while ($Test_Time--) {
     $s = "Current Time: " . localtime() . " ";
     if (length($s) < $Desired_Length) {
-	$Padding = $Desired_Length - length($s);
+    $Padding = $Desired_Length - length($s);
     }
     print $s . "*" x $Padding;
     printf ("\n");
