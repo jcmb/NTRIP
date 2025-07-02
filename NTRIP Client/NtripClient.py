@@ -21,11 +21,15 @@ import datetime
 import base64
 import time
 import os
+from pprint import pprint
 #import ssl
-from optparse import OptionParser
+#from optparse import OptionParser
 
 
-version=0.3
+import argparse
+
+
+version=0.4
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 
 # reconnect parameter (fixed values):
@@ -38,7 +42,7 @@ sleepTime=1 # So the first one is 1 second
 
 class NtripClient(object):
     def __init__(self,
-                 buffer=50,
+                 buffer=5000,
                  user="",
                  out=sys.stdout,
                  port=2101,
@@ -54,7 +58,9 @@ class NtripClient(object):
                  V2=False,
                  headerFile=sys.stderr,
                  headerOutput=False,
-                 maxConnectTime=0
+                 maxConnectTime=0,
+                 GGA=False,
+                 HTTP="1.1"
                  ):
         self.buffer=buffer
         self.user=base64.b64encode(bytes(user,'utf-8')).decode("utf-8")
@@ -73,6 +79,8 @@ class NtripClient(object):
         self.headerFile=headerFile
         self.headerOutput=headerOutput
         self.maxConnectTime=maxConnectTime
+        self.GGA=GGA
+        self.HTTP=HTTP
 
         self.socket=None
 
@@ -107,11 +115,17 @@ class NtripClient(object):
         self.latMin=(lat-self.latDeg)*60
 
     def getMountPointBytes(self):
-        mountPointString = "GET %s HTTP/1.1\r\nUser-Agent: %s\r\nAuthorization: Basic %s\r\n" % (self.mountpoint, useragent, self.user)
+        if self.HTTP=="0.9":
+            mountPointString = "GET %s \r\nUser-Agent: %s\r\nAuthorization: Basic %s\r\n" % (self.mountpoint, useragent, self.user)
+        else:
+            mountPointString = "GET %s HTTP/%s\r\nUser-Agent: %s\r\nAuthorization: Basic %s\r\n" % (self.mountpoint, self.HTTP, useragent, self.user)
 #        mountPointString = "GET %s HTTP/1.1\r\nUser-Agent: %s\r\n" % (self.mountpoint, useragent)
         if self.host or self.V2:
            hostString = "Host: %s:%i\r\n" % (self.caster,self.port)
            mountPointString+=hostString
+        if self.GGA and self.V2:
+           GGAString = "Ntrip-GGA: %s" % (self.getGGABytes().decode('ascii'))
+           mountPointString+=GGAString
         if self.V2:
            mountPointString+="Ntrip-Version: Ntrip/2.0\r\n"
         mountPointString+="\r\n"
@@ -124,8 +138,8 @@ class NtripClient(object):
         ggaString= "GPGGA,%02d%02d%04.2f,%02d%011.8f,%1s,%03d%011.8f,%1s,1,05,0.19,+00400,M,%5.3f,M,," % \
             (now.hour,now.minute,now.second,self.latDeg,self.latMin,self.flagN,self.lonDeg,self.lonMin,self.flagE,self.height)
         checksum = self.calcultateCheckSum(ggaString)
-        if self.verbose:
-            print  ("$%s*%s\r\n" % (ggaString, checksum))
+#        if self.verbose:
+#            print  ("$%s*%s\r\n" % (ggaString, checksum))
         return bytes("$%s*%s\r\n" % (ggaString, checksum),'ascii')
 
     def calcultateCheckSum(self, stringToCheck):
@@ -156,9 +170,10 @@ class NtripClient(object):
                     connectTime=datetime.datetime.now()
 
                     self.socket.settimeout(10)
+#                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256)
                     self.socket.sendall(self.getMountPointBytes())
                     while not found_header:
-                        casterResponse=self.socket.recv(4096) #All the data
+                        casterResponse=self.socket.recv(40960) #Note that the is does not handle really large source tables.
 #                        print(casterResponse)
                         header_lines = casterResponse.decode('utf-8').split("\r\n")
 
@@ -170,7 +185,10 @@ class NtripClient(object):
                                         sys.stderr.write("End Of Header"+"\n")
                             else:
                                 if self.verbose:
-                                    sys.stderr.write("Header: " + line+"\n")
+                                    if found_header:
+                                        sys.stderr.write(line+"\n")
+                                    else:
+                                        sys.stderr.write("Header: " + line+"\n")
                             if self.headerOutput:
                                 self.headerFile.write(line+"\n")
 
@@ -178,8 +196,8 @@ class NtripClient(object):
 
 
                         for line in header_lines:
-                            if line.find("SOURCETABLE")>=0:
-                                sys.stderr.write("Mount point does not exist")
+                            if line.find("SOURCETABLE")>0:
+                                sys.stderr.write("Mount point does not exist\n")
                                 sys.exit(1)
                             elif line.find("401 Unauthorized")>=0:
                                 sys.stderr.write("Unauthorized request\n")
@@ -189,19 +207,43 @@ class NtripClient(object):
                                 sys.exit(2)
                             elif line.find("ICY 200 OK")>=0:
                                 #Request was valid
-                                self.socket.sendall(self.getGGABytes())
+                                if self.verbose:
+                                    sys.stderr.write( "%s Connected to NtripCaster.\n" % (datetime.datetime.now()))
+
+                                if self.GGA and not self.V2:
+                                    gga=self.getGGABytes()
+                                    if self.verbose:
+                                        print  ("%s" % (gga.decode('ascii')))
+                                    self.socket.sendall(gga)
+
                             elif line.find("HTTP/1.0 200 OK")>=0:
                                 #Request was valid
-                                self.socket.sendall(self.getGGABytes())
+                                if self.verbose:
+                                    sys.stderr.write( "%s Connected to NtripCaster.\n" % (datetime.datetime.now()))
+                                if self.GGA and not self.V2:
+                                    gga=self.getGGABytes()
+                                    if self.verbose:
+                                        print  ("%s" % (gga.decode('ascii')))
+                                    self.socket.sendall(gga)
+
                             elif line.find("HTTP/1.1 200 OK")>=0:
                                 #Request was valid
-                                self.socket.sendall(self.getGGABytes())
+                                if self.verbose:
+                                    sys.stderr.write( "%s Connected to NtripCaster.\n" % (datetime.datetime.now()))
+                                if self.GGA and not self.V2:
+                                    gga=self.getGGABytes()
+                                    if self.verbose:
+                                        print  ("%s" % (gga.decode('ascii')))
+                                    self.socket.sendall(gga)
 
 
 
                     data = "Initial data"
                     while data:
                         try:
+#                            print("\nSleeping")
+#                            time.sleep(0.01)
+#                            print("\nSleep Finished. " + str(datetime.datetime.now()))
                             data=self.socket.recv(self.buffer)
                             self.out.write(data)
 #                            self.out.buffer.write(data)
@@ -221,6 +263,8 @@ class NtripClient(object):
                         except socket.timeout:
                             if self.verbose:
                                 sys.stderr.write('Connection TimedOut\n')
+                                sys.stderr.write( "%s Disconnected from NtripCaster.\n" % (datetime.datetime.now()))
+
                             data=False
                         except socket.error:
                             if self.verbose:
@@ -263,33 +307,187 @@ class NtripClient(object):
             sys.exit()
 
 if __name__ == '__main__':
-    usage="NtripClient.py [options] caster port mountpoint"
-    parser=OptionParser(version=str(version), usage=usage)
-    parser.add_option("-u", "--user", type="string", dest="user", default="IBS", help="The Ntripcaster username.  Default: %default")
-    parser.add_option("-p", "--password", type="string", dest="password", default="IBS", help="The Ntripcaster password. Default: %default")
-    parser.add_option("-o", "--org", type="string", dest="org", help="Use IBSS and the provided organization for the user. Caster and Port are not needed in this case Default: %default")
-    parser.add_option("-b", "--baseorg", type="string", dest="baseorg", help="The org that the base is in. IBSS Only, assumed to be the user org")
-    parser.add_option("-t", "--latitude", type="float", dest="lat", default=50.09, help="Your latitude.  Default: %default")
-    parser.add_option("-g", "--longitude", type="float", dest="lon", default=8.66, help="Your longitude.  Default: %default")
-    parser.add_option("-e", "--height", type="float", dest="height", default=1200, help="Your ellipsoid height.  Default: %default")
-    parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False, help="Verbose")
-    parser.add_option("-T", "--Tell", action="store_true", dest="tell", default=False, help="Tell Settings")
-    parser.add_option("-s", "--ssl", action="store_true", dest="ssl", default=False, help="Use SSL for the connection")
-    parser.add_option("-H", "--host", action="store_true", dest="host", default=False, help="Include host header, should be on for IBSS")
-    parser.add_option("-r", "--Reconnect", type="int", dest="maxReconnect", default=1, help="Number of reconnections")
-    parser.add_option("-D", "--UDP", type="int", dest="UDP", default=None, help="Broadcast recieved data on the provided port")
-    parser.add_option("-2", "--V2", action="store_true", dest="V2", default=False, help="Make a NTRIP V2 Connection")
-    parser.add_option("-f", "--outputFile", type="string", dest="outputFile", default=None, help="Write to this file, instead of stdout")
-    parser.add_option("-m", "--maxtime", type="int", dest="maxConnectTime", default=0, help="Maximum length of the connection, in seconds")
 
-    parser.add_option("--Header", action="store_true", dest="headerOutput", default=False, help="Write headers to stderr")
-    parser.add_option("--HeaderFile", type="string", dest="headerFile", default=None, help="Write headers to this file, instead of stderr.")
-    (options, args) = parser.parse_args()
+    # Note: The 'usage' string is less crucial with argparse as it generates a good one automatically.
+    # However, you can still customize it or format it if needed.
+    # For now, let's leverage argparse's default usage generation.
+
+    parser = argparse.ArgumentParser(
+        description="NtripClient.py - A client for Ntrip casters.",
+        epilog="NtripClient.py [options] mountpoint [caster] [port]  -- Connects to an Ntrip caster.\n"
+               "Note: 'caster', 'port', are optional if --org is provided.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+
+
+    # Version argument (often handled directly by argparse)
+    parser.add_argument(
+        '-V', '--version', action='version', version=f'%(prog)s {version}'
+    )
+
+    # Positional Arguments
+    parser.add_argument(
+        'mountpoint',
+        type=str,
+        help='The Ntrip mountpoint.'
+    )
+
+    parser.add_argument(
+        'caster',
+        type=str,
+        nargs='?',  # Makes it optional: 0 or 1 argument
+        help='The Ntripcaster hostname or IP address.'
+    )
+    parser.add_argument(
+        'port',
+        type=int,
+        default=2101,
+        nargs='?',  # Makes it optional: 0 or 1 argument
+        help='The Ntripcaster port number.'
+    )
+
+    # Optional Arguments
+    parser.add_argument(
+        "-u", "--user",
+        type=str,
+        default="IBS",
+        help="The Ntripcaster username. Default: %(default)s"
+    )
+    parser.add_argument(
+        "-p", "--password",
+        type=str,
+        default="IBS",
+        help="The Ntripcaster password. Default: %(default)s"
+    )
+    parser.add_argument(
+        "-o", "--org",
+        type=str,
+        help="Use IBSS and the provided organization for the user. Caster and Port are not needed in this case."
+        " Default: %(default)s (Note: optparse default was None, argparse default for missing is None unless specified)"
+    )
+    parser.add_argument(
+        "-b", "--baseorg",
+        type=str,
+        help="The org that the base is in. IBSS Only, assumed to be the user org."
+    )
+    parser.add_argument(
+        "-t", "--lat",
+        type=float,
+        default=39.56,
+        help="Your latitude. Default: %(default).2f" # Added .2f for formatting float default
+    )
+    parser.add_argument(
+        "--GGA",
+        action="store_true",
+        default=False,
+        help="Enable GGA output."
+    )
+    parser.add_argument(
+        "-g", "--long",
+        type=float,
+        default=-105.5,
+        help="Your longitude. Default: %(default).1f" # Added .1f for formatting float default
+    )
+    parser.add_argument(
+        "-e", "--height",
+        type=float,
+        default=1200.0, # Make sure default is float if type is float
+        help="Your ellipsoid height. Default: %(default).1f"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose output."
+    )
+    parser.add_argument(
+        "-T", "--Tell",
+        action="store_true",
+        default=False,
+        help="Tell Settings."
+    )
+    parser.add_argument(
+        "-s", "--ssl",
+        action="store_true",
+        default=False,
+        help="Use SSL for the connection."
+    )
+    parser.add_argument(
+        "-H", "--host",
+        action="store_true",
+        default=False,
+        help="Include host header; should be on for IBSS."
+    )
+    parser.add_argument(
+        "-r", "--Reconnect",
+        dest="maxReconnect",
+        type=int,
+        default=1,
+        help="Number of reconnections. Default: %(default)s"
+    )
+    parser.add_argument(
+        "-D", "--UDP",
+        type=int,
+        default=None,
+        help="Broadcast received data on the provided port."
+    )
+    parser.add_argument(
+        "-2", "--V2",
+        action="store_true",
+        default=False,
+        help="Make a NTRIP V2 Connection."
+    )
+    parser.add_argument(
+        "-f", "--outputFile",
+        type=str,
+        default=None,
+        help="Write to this file, instead of stdout."
+    )
+    parser.add_argument(
+        "-m", "--maxtime",
+        type=int,
+        dest="maxConnectTime",
+        default=0,
+        help="Maximum length of the connection, in seconds. Default: %(default)s"
+    )
+    parser.add_argument(
+        '--HTTP',
+        type=str,  # Specify the type as string
+        choices=['0.9', '1.0', '1.1'],  # Define the allowed choices as strings
+        default='1.1',  # Set the default value as a string
+        help='Specify the HTTP protocol version (choices: "0.9", "1.0", "1.1", default: "%(default)s")'
+    )
+    parser.add_argument(
+        "--Header",
+        action="store_true",
+        dest="headerOutput",
+        default=False,
+        help="Write headers to stderr."
+    )
+    parser.add_argument(
+        "--HeaderFile",
+        type=str,
+        default=None,
+        help="Write headers to this file, instead of stderr."
+    )
+
+    # Parse the arguments
+    options = parser.parse_args()
+    pprint(options)
+
+# You can now access your arguments like:
+# print(f"Caster: {args.caster}")
+# print(f"Port: {args.port}")
+# print(f"Mountpoint: {args.mountpoint}")
+# print(f"User: {args.user}")
+# print(f"HTTP Version: {args.HTTP}")    (options, args) = parser.parse_args()
     ntripArgs = {}
     ntripArgs['lat']=options.lat
-    ntripArgs['lon']=options.lon
+    ntripArgs['lon']=options.long
     ntripArgs['height']=options.height
     ntripArgs['host']=options.host
+    ntripArgs['GGA']=options.GGA
+
 
     if options.ssl:
         import ssl
@@ -298,7 +496,7 @@ if __name__ == '__main__':
         ntripArgs['ssl']=False
 
     if options.org:
-        if len(args) != 1 :
+        if options.caster != None :
             print ("Incorrect number of arguments for IBSS. You do not need to provide the server and port\n")
             parser.print_help()
             sys.exit(1)
@@ -307,21 +505,24 @@ if __name__ == '__main__':
             ntripArgs['caster']=options.baseorg + ".ibss.trimbleos.com"
         else:
             ntripArgs['caster']=options.org + ".ibss.trimbleos.com"
-        if options.ssl :
-            ntripArgs['port']=52101
-        else :
-            ntripArgs['port']=2101
-        ntripArgs['mountpoint']=args[0]
+        if options.port == None:
+            if options.ssl :
+                ntripArgs['port']=52101
+            else :
+                ntripArgs['port']=2101
+        else:
+            ntripArgs['port']=options.port
+        ntripArgs['mountpoint']=options.mountpoint
 
     else:
-        if len(args) != 3 :
+        if options.caster == None:
             print ("Incorrect number of arguments for NTRIP\n")
             parser.print_help()
             sys.exit(1)
         ntripArgs['user']=options.user+":"+options.password
-        ntripArgs['caster']=args[0]
-        ntripArgs['port']=int(args[1])
-        ntripArgs['mountpoint']=args[2]
+        ntripArgs['caster']=options.caster
+        ntripArgs['port']=options.port
+        ntripArgs['mountpoint']=options.mountpoint
 
     if ntripArgs['mountpoint'][0:1] !="/":
         ntripArgs['mountpoint'] = "/"+ntripArgs['mountpoint']
@@ -337,19 +538,22 @@ if __name__ == '__main__':
 
     maxReconnect=options.maxReconnect
     maxConnectTime=options.maxConnectTime
+    ntripArgs['HTTP']=options.HTTP
 
     if maxConnectTime < 0:
         sys.stderr.write("Max Connection Time must be >= 0\n")
         sys.exit(1)
 
 
-    if options.verbose or options.tell:
+    if options.verbose or options.Tell:
         print ("Server: " + ntripArgs['caster'])
         print ("Port: " + str(ntripArgs['port']))
         print ("User: " + ntripArgs['user'])
         print ("mountpoint: " +ntripArgs['mountpoint'])
         print ("Reconnects: " + str(maxReconnect))
         print ("Max Connect Time: " + str (maxConnectTime))
+        print ("Send GGA: " + str (ntripArgs['GGA']))
+        print ("HTTP Version: " + (ntripArgs['HTTP']))
         if ntripArgs['V2']:
             print ("NTRIP: V2")
         else:
@@ -372,8 +576,8 @@ if __name__ == '__main__':
         stdout= os.fdopen(sys.stdout.fileno(), "wb", closefd=False,buffering=0)
         ntripArgs['out']=stdout
 
-    if options.headerFile:
-        h = open(options.headerFile, 'w')
+    if options.HeaderFile:
+        h = open(options.HeaderFile, 'w')
         ntripArgs['headerFile']=h
         ntripArgs['headerOutput']=True
 
@@ -383,5 +587,5 @@ if __name__ == '__main__':
     finally:
         if fileOutput:
             f.close()
-        if options.headerFile:
+        if options.HeaderFile:
             h.close()
