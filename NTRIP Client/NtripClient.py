@@ -197,6 +197,8 @@ class NtripClient(object):
 
                         for line in header_lines:
                             if line.find("SOURCETABLE")>0:
+                                if self.verbose:
+                                    print(line)
                                 sys.stderr.write("Mount point does not exist\n")
                                 sys.exit(1)
                             elif line.find("401 Unauthorized")>=0:
@@ -235,6 +237,9 @@ class NtripClient(object):
                                     if self.verbose:
                                         print  ("%s" % (gga.decode('ascii')))
                                     self.socket.sendall(gga)
+                            else:
+                                print(line)
+
 
 
 
@@ -513,6 +518,8 @@ if __name__ == '__main__':
         else:
             ntripArgs['port']=options.port
         ntripArgs['mountpoint']=options.mountpoint
+        if options.host == False:
+            print("Warning: IBSS Mode without host header")
 
     else:
         if options.caster == None:
