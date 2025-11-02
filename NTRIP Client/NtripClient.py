@@ -45,7 +45,7 @@ class NtripClient(object):
                  buffer=5000,
                  user="",
                  out=sys.stdout,
-                 port=2101,
+                 port=None,
                  caster="",
                  mountpoint="",
                  host=False,
@@ -162,7 +162,12 @@ class NtripClient(object):
 
                 self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 if self.ssl:
-                    self.socket=ssl.wrap_socket(self.socket)
+                    # NEW CODE
+                    context = ssl.create_default_context()
+                    # You need the server's hostname to verify the certificate.
+                    # Replace 'self.caster' with the actual variable holding the hostname/IP.
+                    self.socket = context.wrap_socket(self.socket, server_hostname=self.caster)
+#                    self.socket=ssl.wrap_socket(self.socket)
 
                 error_indicator = self.socket.connect_ex((self.caster, self.port))
                 if error_indicator==0:
@@ -174,6 +179,7 @@ class NtripClient(object):
                     self.socket.sendall(self.getMountPointBytes())
                     while not found_header:
                         casterResponse=self.socket.recv(40960) #Note that the is does not handle really large source tables.
+
 #                        print(casterResponse)
                         header_lines = casterResponse.decode('utf-8').split("\r\n")
 
@@ -186,7 +192,7 @@ class NtripClient(object):
                             else:
                                 if self.verbose:
                                     if found_header:
-                                        sys.stderr.write(line+"\n")
+                                        sys.stderr.write("Body: " + line+"\n")
                                     else:
                                         sys.stderr.write("Header: " + line+"\n")
                             if self.headerOutput:
@@ -205,6 +211,8 @@ class NtripClient(object):
                                 sys.stderr.write("Unauthorized request\n")
                                 sys.exit(1)
                             elif line.find("404 Not Found")>=0:
+                                if self.verbose:
+                                    print(header_lines)
                                 sys.stderr.write("Mount Point does not exist\n")
                                 sys.exit(2)
                             elif line.find("ICY 200 OK")>=0:
@@ -250,6 +258,9 @@ class NtripClient(object):
 #                            time.sleep(0.01)
 #                            print("\nSleep Finished. " + str(datetime.datetime.now()))
                             data=self.socket.recv(self.buffer)
+                            if self.verbose:
+                               sys.stderr.write("%s Data received: %s \n" % (datetime.datetime.now(), len(casterResponse)))
+
                             self.out.write(data)
 #                            self.out.buffer.write(data)
                             if self.UDP_socket:
@@ -346,9 +357,8 @@ if __name__ == '__main__':
     parser.add_argument(
         'port',
         type=int,
-        default=2101,
         nargs='?',  # Makes it optional: 0 or 1 argument
-        help='The Ntripcaster port number.'
+        help='The Ntripcaster port number. Default of 2101'
     )
 
     # Optional Arguments
@@ -478,7 +488,8 @@ if __name__ == '__main__':
 
     # Parse the arguments
     options = parser.parse_args()
-    pprint(options)
+    if options.verbose:
+        pprint(options)
 
 # You can now access your arguments like:
 # print(f"Caster: {args.caster}")
@@ -510,6 +521,7 @@ if __name__ == '__main__':
             ntripArgs['caster']=options.baseorg + ".ibss.trimbleos.com"
         else:
             ntripArgs['caster']=options.org + ".ibss.trimbleos.com"
+
         if options.port == None:
             if options.ssl :
                 ntripArgs['port']=52101
@@ -528,7 +540,10 @@ if __name__ == '__main__':
             sys.exit(1)
         ntripArgs['user']=options.user+":"+options.password
         ntripArgs['caster']=options.caster
-        ntripArgs['port']=options.port
+        if options.port == None:
+            ntripArgs['port']=2101
+        else:
+            ntripArgs['port']=options.port
         ntripArgs['mountpoint']=options.mountpoint
 
     if ntripArgs['mountpoint'][0:1] !="/":
