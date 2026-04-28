@@ -53,6 +53,8 @@ class NtripClient(object):
                  lon=122,
                  height=1212,
                  ssl=False,
+                 ssl_cafile=None,
+                 ssl_insecure=False,
                  verbose=False,
                  UDP_Port=None,
                  V2=False,
@@ -73,6 +75,8 @@ class NtripClient(object):
         self.height=height
         self.verbose=verbose
         self.ssl=ssl
+        self.ssl_cafile = ssl_cafile
+        self.ssl_insecure = ssl_insecure
         self.host=host
         self.UDP_Port=UDP_Port
         self.V2=V2
@@ -162,11 +166,16 @@ class NtripClient(object):
 
                 self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 if self.ssl:
-                    # NEW CODE
-                    context = ssl.create_default_context()
-                    # You need the server's hostname to verify the certificate.
-                    # Replace 'self.caster' with the actual variable holding the hostname/IP.
-                    self.socket = context.wrap_socket(self.socket, server_hostname=self.caster)
+                    import ssl
+                    if self.ssl_insecure:
+                        context = ssl._create_unverified_context()
+                    else:
+                        context = ssl.create_default_context()
+                        if self.ssl_cafile:
+                            context.load_verify_locations(cafile=self.ssl_cafile)
+                    self.socket = context.wrap_socket(
+                        self.socket, server_hostname=self.caster
+                    )
 #                    self.socket=ssl.wrap_socket(self.socket)
 
                 error_indicator = self.socket.connect_ex((self.caster, self.port))
@@ -428,6 +437,19 @@ if __name__ == '__main__':
         help="Use SSL for the connection."
     )
     parser.add_argument(
+        "--ssl-cafile",
+        type=str,
+        default=None,
+        metavar="PEM",
+        help="Trust this CA bundle or server PEM when verifying TLS (recommended for self-signed casters).",
+    )
+    parser.add_argument(
+        "-k", "--ssl-insecure",
+        action="store_true",
+        default=False,
+        help="Disable TLS certificate verification (insecure; use only for testing).",
+    )
+    parser.add_argument(
         "-H", "--host",
         action="store_true",
         default=False,
@@ -506,10 +528,13 @@ if __name__ == '__main__':
 
 
     if options.ssl:
-        import ssl
         ntripArgs['ssl']=True
+        ntripArgs['ssl_cafile'] = options.ssl_cafile
+        ntripArgs['ssl_insecure'] = options.ssl_insecure
     else:
         ntripArgs['ssl']=False
+        ntripArgs['ssl_cafile'] = None
+        ntripArgs['ssl_insecure'] = False
 
     if options.org:
         if options.caster != None :
