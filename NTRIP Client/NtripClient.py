@@ -35,6 +35,7 @@ import argparse
 version=0.4
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 DEFAULT_CONFIG_PATH = Path.home() / "ntripclient.ntrip"
+LAST_CONFIG_PATH_FILE = Path.home() / ".ntripclient-last.json"
 
 CONFIG_DEFAULTS = {
     "mountpoint": "",
@@ -181,7 +182,10 @@ class NtripClient(object):
            mountPointString+="Ntrip-Version: Ntrip/2.0\r\n"
         mountPointString+="\r\n"
         if self.verbose:
-           print (mountPointString)
+           sys.stderr.write(mountPointString)
+        if self.headerOutput:
+           self.headerFile.write(">>> NTRIP request\n")
+           self.headerFile.write(mountPointString)
         return bytes(mountPointString,'ascii')
 
     def getGGABytes(self):
@@ -265,7 +269,7 @@ class NtripClient(object):
                         for line in header_lines:
                             if line.find("SOURCETABLE")>0:
                                 if self.verbose:
-                                    print(line)
+                                    sys.stderr.write(line+"\n")
                                 sys.stderr.write("Mount point does not exist\n")
                                 sys.exit(1)
                             elif line.find("401 Unauthorized")>=0:
@@ -273,7 +277,7 @@ class NtripClient(object):
                                 sys.exit(1)
                             elif line.find("404 Not Found")>=0:
                                 if self.verbose:
-                                    print(header_lines)
+                                    sys.stderr.write(str(header_lines)+"\n")
                                 sys.stderr.write("Mount Point does not exist\n")
                                 sys.exit(2)
                             elif line.find("ICY 200 OK")>=0:
@@ -284,7 +288,7 @@ class NtripClient(object):
                                 if self.GGA and not self.V2:
                                     gga=self.getGGABytes()
                                     if self.verbose:
-                                        print  ("%s" % (gga.decode('ascii')))
+                                        sys.stderr.write("%s" % (gga.decode('ascii')))
                                     self.socket.sendall(gga)
 
                             elif line.find("HTTP/1.0 200 OK")>=0:
@@ -294,7 +298,7 @@ class NtripClient(object):
                                 if self.GGA and not self.V2:
                                     gga=self.getGGABytes()
                                     if self.verbose:
-                                        print  ("%s" % (gga.decode('ascii')))
+                                        sys.stderr.write("%s" % (gga.decode('ascii')))
                                     self.socket.sendall(gga)
 
                             elif line.find("HTTP/1.1 200 OK")>=0:
@@ -304,10 +308,10 @@ class NtripClient(object):
                                 if self.GGA and not self.V2:
                                     gga=self.getGGABytes()
                                     if self.verbose:
-                                        print  ("%s" % (gga.decode('ascii')))
+                                        sys.stderr.write("%s" % (gga.decode('ascii')))
                                     self.socket.sendall(gga)
                             else:
-                                print(line)
+                                sys.stderr.write(line+"\n")
 
 
 
@@ -425,6 +429,37 @@ def save_config_file(config, path):
     return config_path
 
 
+def load_last_config_path():
+    if not LAST_CONFIG_PATH_FILE.exists():
+        return None
+
+    try:
+        with LAST_CONFIG_PATH_FILE.open("r", encoding="utf-8") as last_config_file:
+            loaded = json.load(last_config_file)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(loaded, dict):
+        return None
+
+    last_path = optional_string(loaded.get("config_path"))
+    if not last_path:
+        return None
+    return Path(last_path).expanduser()
+
+
+def save_last_config_path(path):
+    config_path = Path(path).expanduser()
+    try:
+        LAST_CONFIG_PATH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LAST_CONFIG_PATH_FILE.open("w", encoding="utf-8") as last_config_file:
+            json.dump({"config_path": str(config_path)}, last_config_file, indent=2)
+            last_config_file.write("\n")
+    except OSError as exc:
+        print(f"Could not remember last config file {config_path}: {exc}", file=sys.stderr)
+    return config_path
+
+
 def config_arg_was_supplied(argv):
     return any(arg == "--config" or arg.startswith("--config=") for arg in argv)
 
@@ -495,6 +530,9 @@ def normalize_config(config):
 
     if normalized["maxReconnect"] < 1:
         raise ValueError("Reconnects must be >= 1")
+
+    if normalized["port"] is not None and normalized["port"] < 1:
+        raise ValueError("port must be >= 1")
 
     return normalized
 
@@ -596,11 +634,11 @@ def build_ntrip_args(config):
         else:
             ntripArgs["caster"] = config["org"] + ".ibss.trimbleos.com"
         if config["port"] is None:
-            ntripArgs["port"] = 52101 if config["ssl"] else 2101
+            ntripArgs["port"] = 2101
         else:
             ntripArgs["port"] = config["port"]
         if not config["host"]:
-            print("Warning: IBSS Mode without host header")
+            sys.stderr.write("Warning: IBSS Mode without host header\n")
     else:
         if not config["caster"]:
             raise ValueError("A caster is required unless --org is provided")
@@ -662,7 +700,8 @@ def read_source_table(config):
     response = bytearray()
     ntrip_socket = connect_ntrip_socket(ntripArgs)
     try:
-        ntrip_socket.sendall(get_source_table_request_bytes(ntripArgs))
+        request_bytes = get_source_table_request_bytes(ntripArgs)
+        ntrip_socket.sendall(request_bytes)
         while len(response) < 2 * 1024 * 1024:
             chunk = ntrip_socket.recv(4096)
             if not chunk:
@@ -673,8 +712,9 @@ def read_source_table(config):
     finally:
         ntrip_socket.close()
 
+    request = request_bytes.decode("ascii", errors="replace")
     source_table = response.decode("utf-8", errors="replace")
-    write_source_table_response(source_table, config)
+    write_source_table_exchange(request, source_table, config)
     if "401 Unauthorized" in source_table:
         raise ValueError("Unauthorized request")
     if "404 Not Found" in source_table:
@@ -686,18 +726,18 @@ def read_source_table(config):
     return mountpoints
 
 
-def write_source_table_response(source_table, config):
+def write_source_table_exchange(request, response, config):
+    exchange = f">>> Source table request\n{request}\n<<< Source table response\n{response}"
+    if response and not response.endswith("\n"):
+        exchange += "\n"
+
     header_path = optional_string(config.get("HeaderFile"))
     if header_path:
         with open(Path(header_path).expanduser(), "w", encoding="utf-8") as header_file:
-            header_file.write(source_table)
-            if source_table and not source_table.endswith("\n"):
-                header_file.write("\n")
+            header_file.write(exchange)
         return
 
-    sys.stderr.write(source_table)
-    if source_table and not source_table.endswith("\n"):
-        sys.stderr.write("\n")
+    sys.stderr.write(exchange)
 
 
 def parse_source_table(source_table):
@@ -724,31 +764,43 @@ def parse_source_table(source_table):
     return sorted(mountpoints, key=lambda item: item["mountpoint"].lower())
 
 
-def config_filename_for_mountpoint(mountpoint):
-    mountpoint = optional_string(mountpoint) or "ntripclient"
-    stem = Path(mountpoint.lstrip("/")).name or "ntripclient"
+def safe_filename_part(value, default):
+    value = optional_string(value) or default
+    stem = Path(value.lstrip("/")).name or default
     sanitized = "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in stem)
-    return f"{sanitized or 'ntripclient'}.ntrip"
+    return sanitized or default
+
+
+def config_filename_for_mountpoint(mountpoint):
+    return f"{safe_filename_part(mountpoint, 'ntripclient')}.ntrip"
+
+
+def config_filename_for_connection(config):
+    caster = safe_filename_part(config.get("caster"), "caster")
+    mountpoint = safe_filename_part(config.get("mountpoint"), "mountpoint")
+    return f"{caster}-{mountpoint}.ntrip"
 
 
 def print_connection_settings(ntripArgs, config):
-    print("Server: " + ntripArgs["caster"])
-    print("Port: " + str(ntripArgs["port"]))
-    print("User: " + ntripArgs["user"])
-    print("mountpoint: " + ntripArgs["mountpoint"])
-    print("Reconnects: " + str(config["maxReconnect"]))
-    print("Max Connect Time: " + str(config["maxConnectTime"]))
-    print("Send GGA: " + str(ntripArgs["GGA"]))
-    print("HTTP Version: " + ntripArgs["HTTP"])
+    output = [
+        "Server: " + ntripArgs["caster"],
+        "Port: " + str(ntripArgs["port"]),
+        "User: " + ntripArgs["user"],
+        "mountpoint: " + ntripArgs["mountpoint"],
+        "Reconnects: " + str(config["maxReconnect"]),
+        "Max Connect Time: " + str(config["maxConnectTime"]),
+        "Send GGA: " + str(ntripArgs["GGA"]),
+        "HTTP Version: " + ntripArgs["HTTP"],
+    ]
     if ntripArgs["V2"]:
-        print("NTRIP: V2")
+        output.append("NTRIP: V2")
     else:
-        print("NTRIP: V1")
+        output.append("NTRIP: V1")
     if ntripArgs["ssl"]:
-        print("TLS Connection")
+        output.append("TLS Connection")
     else:
-        print("Uncrypted Connection")
-    print("")
+        output.append("Uncrypted Connection")
+    sys.stderr.write("\n".join(output) + "\n\n")
 
 
 def run_client(config, stop_event=None, client_callback=None):
@@ -758,7 +810,7 @@ def run_client(config, stop_event=None, client_callback=None):
     maxReconnect = config["maxReconnect"]
 
     if config["verbose"]:
-        pprint(config)
+        pprint(config, stream=sys.stderr)
     if config["verbose"] or config["Tell"]:
         print_connection_settings(ntripArgs, config)
 
@@ -803,6 +855,13 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     from tkinter import filedialog, messagebox, ttk
 
     config_path = Path(config_path).expanduser()
+    config_path_chosen_on_startup = config_path != DEFAULT_CONFIG_PATH
+    if config_path == DEFAULT_CONFIG_PATH:
+        last_config_path = load_last_config_path()
+        if last_config_path and last_config_path.exists():
+            config_path = last_config_path
+            config_path_chosen_on_startup = True
+
     config = CONFIG_DEFAULTS.copy()
     try:
         config.update(load_config_file(config_path))
@@ -814,11 +873,11 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
 
     root = tk.Tk()
     root.title(f"NtripClient - {config_path}")
-    root.geometry("650x720")
+    root.geometry("650x920")
 
     path_var = tk.StringVar(value=str(config_path))
-    status_var = tk.StringVar(value="Enter connection parameters. Click Save only when you want to write a config file.")
-    config_path_chosen = {"value": False}
+    status_var = tk.StringVar(value="")
+    config_path_chosen = {"value": config_path_chosen_on_startup}
     client_state = {"event": None, "client": None, "thread": None}
 
     def update_window_title(*_):
@@ -844,10 +903,6 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     container = ttk.Frame(root, padding=12)
     container.pack(fill="both", expand=True)
 
-    path_frame = ttk.Frame(container)
-    path_frame.pack(fill="x", pady=(0, 8))
-    ttk.Label(path_frame, text="Config file is shown in the window title.").pack(side="left")
-
     def browse_config():
         initial_path = Path(path_var.get()).expanduser()
         selected = filedialog.askopenfilename(
@@ -863,6 +918,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
                 selected_config = CONFIG_DEFAULTS.copy()
                 selected_config.update(load_config_file(selected_path, require=True))
                 apply_config_to_fields(normalize_config(selected_config))
+                save_last_config_path(selected_path)
                 status_var.set(f"Loaded settings from {selected_path}")
             except (OSError, json.JSONDecodeError, ValueError) as exc:
                 messagebox.showerror("NtripClient", str(exc))
@@ -884,22 +940,23 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         ("password", "Password", "password"),
         ("org", "IBSS organization", "entry"),
         ("baseorg", "IBSS base org", "entry"),
-        ("lat", "Latitude", "entry"),
-        ("long", "Longitude", "entry"),
-        ("height", "Height", "entry"),
+        ("GGA", "Send GGA", "check"),
+        ("lat", "GGA latitude", "entry"),
+        ("long", "GGA longitude", "entry"),
+        ("height", "GGA height", "entry"),
+        ("ssl", "Use TLS", "check"),
+        ("ssl_validate", "Validate TLS certificate", "check"),
+        ("ssl_cafile", "TLS CA file", "file"),
         ("maxReconnect", "Reconnects", "entry"),
         ("UDP", "UDP broadcast port", "entry"),
         ("maxConnectTime", "Max connection time", "entry"),
         ("HTTP", "HTTP version", "combo"),
-        ("ssl_cafile", "TLS CA file", "file"),
         ("outputFile", "Output file", "savefile"),
         ("HeaderFile", "Header file", "savefile"),
     ]
     bool_fields = [
-        ("GGA", "Send GGA"),
         ("verbose", "Verbose output"),
         ("Tell", "Print settings before connecting"),
-        ("ssl", "Use TLS"),
         ("host", "Include host header"),
         ("V2", "NTRIP V2"),
         ("headerOutput", "Write headers"),
@@ -925,6 +982,13 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         text_vars[key] = var
         if field_type == "combo":
             widget = ttk.Combobox(fields_frame, textvariable=var, values=("0.9", "1.0", "1.1"), state="readonly")
+        elif field_type == "check":
+            var = tk.BooleanVar(value=bool_value(config.get(key, False)))
+            if key == "ssl_validate":
+                var.set(not bool_value(config.get("ssl_insecure", False)))
+            text_vars.pop(key, None)
+            bool_vars[key] = var
+            widget = ttk.Checkbutton(fields_frame, variable=var)
         elif key == "mountpoint":
             widget = ttk.Combobox(fields_frame, textvariable=var, values=(), state="normal")
         else:
@@ -933,23 +997,18 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         widgets[key] = widget
         widget.grid(row=row, column=1, sticky="ew", pady=4)
         if key == "mountpoint":
-            mountpoint_button["widget"] = ttk.Button(fields_frame, text="Get MountPoints", command=lambda: fetch_mountpoints_from_gui())
+            mountpoint_button["widget"] = ttk.Button(fields_frame, text="Get Mountpoint", command=lambda: fetch_mountpoints_from_gui())
             mountpoint_button["widget"].grid(row=row, column=2, padx=(8, 0), pady=4)
         if field_type in ("file", "savefile"):
-            ttk.Button(fields_frame, text="Browse", command=lambda v=var, s=field_type == "savefile": browse_file(v, s)).grid(row=row, column=2, padx=(8, 0), pady=4)
+            browse_button = ttk.Button(fields_frame, text="Browse", command=lambda v=var, s=field_type == "savefile": browse_file(v, s))
+            browse_button.grid(row=row, column=2, padx=(8, 0), pady=4)
+            widgets[f"{key}_browse"] = browse_button
 
     bool_start = len(text_fields)
     for index, (key, label) in enumerate(bool_fields):
         var = tk.BooleanVar(value=bool_value(config.get(key, False)))
         bool_vars[key] = var
         ttk.Checkbutton(fields_frame, text=label, variable=var).grid(row=bool_start + index, column=0, columnspan=3, sticky="w", pady=3)
-
-    ssl_validate_var = tk.BooleanVar(value=not bool_value(config.get("ssl_insecure", False)))
-    ttk.Checkbutton(
-        fields_frame,
-        text="Validate TLS certificate",
-        variable=ssl_validate_var,
-    ).grid(row=bool_start + len(bool_fields), column=0, columnspan=3, sticky="w", pady=3)
 
     def sync_tls_port(*_):
         port = text_vars["port"].get().strip()
@@ -959,7 +1018,27 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         elif port in ("", "52101"):
             text_vars["port"].set("2101")
 
+    def set_widget_enabled(widget, enabled):
+        if not widget:
+            return
+        try:
+            widget.state(["!disabled"] if enabled else ["disabled"])
+        except AttributeError:
+            widget.configure(state="normal" if enabled else "disabled")
+
+    def refresh_dependent_fields(*_):
+        gga_enabled = bool_vars["GGA"].get()
+        for key in ("lat", "long", "height"):
+            set_widget_enabled(widgets.get(key), gga_enabled)
+
+        tls_enabled = bool_vars["ssl"].get()
+        for key in ("ssl_validate", "ssl_cafile", "ssl_cafile_browse"):
+            set_widget_enabled(widgets.get(key), tls_enabled)
+
     bool_vars["ssl"].trace_add("write", sync_tls_port)
+    bool_vars["ssl"].trace_add("write", refresh_dependent_fields)
+    bool_vars["GGA"].trace_add("write", refresh_dependent_fields)
+    refresh_dependent_fields()
 
     fields_frame.columnconfigure(1, weight=1)
 
@@ -982,8 +1061,10 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
             value = var.get().strip()
             collected[key] = value if value else None
         for key, var in bool_vars.items():
+            if key == "ssl_validate":
+                continue
             collected[key] = var.get()
-        collected["ssl_insecure"] = not ssl_validate_var.get()
+        collected["ssl_insecure"] = not bool_vars["ssl_validate"].get()
         return normalize_config(collected)
 
     def apply_config_to_fields(new_config):
@@ -991,12 +1072,30 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
             value = new_config.get(key, "")
             var.set("" if value is None else str(value))
         for key, var in bool_vars.items():
-            var.set(bool_value(new_config.get(key, False)))
-        ssl_validate_var.set(not bool_value(new_config.get("ssl_insecure", False)))
+            if key == "ssl_validate":
+                var.set(not bool_value(new_config.get("ssl_insecure", False)))
+            else:
+                var.set(bool_value(new_config.get(key, False)))
+        refresh_dependent_fields()
 
     def save_from_gui():
         collected = collect_config()
-        saved_path = save_config_file(collected, path_var.get())
+        current_path = Path(path_var.get()).expanduser()
+        selected = filedialog.asksaveasfilename(
+            title="Save config file",
+            initialdir=str(current_path.parent),
+            initialfile=config_filename_for_connection(collected),
+            defaultextension=".ntrip",
+            filetypes=(("NTRIP config files", "*.ntrip"), ("JSON files", "*.json"), ("All files", "*.*")),
+        )
+        if not selected:
+            status_var.set("Save canceled.")
+            return None
+
+        config_path_chosen["value"] = True
+        path_var.set(selected)
+        saved_path = save_config_file(collected, selected)
+        save_last_config_path(saved_path)
         status_var.set(f"Saved settings to {saved_path}")
         return collected
 
