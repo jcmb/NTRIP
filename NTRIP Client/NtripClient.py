@@ -246,7 +246,7 @@ class NtripClient(object):
         return bytes(mountPointString,'ascii')
 
     def getGGABytes(self):
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
         ggaString= "GPGGA,%02d%02d%04.2f,%02d%011.8f,%1s,%03d%011.8f,%1s,1,05,0.19,+00400,M,%5.3f,M,," % \
             (now.hour,now.minute,now.second,self.latDeg,self.latMin,self.flagN,self.lonDeg,self.lonMin,self.flagE,self.height)
         checksum = self.calcultateCheckSum(ggaString)
@@ -315,7 +315,15 @@ class NtripClient(object):
                             header_end = header_buffer.find(b"\n\n")
                             separator_length = 2
                         if header_end < 0:
-                            continue
+                            first_line_end = header_buffer.find(b"\r\n")
+                            separator_length = 2
+                            if first_line_end < 0:
+                                first_line_end = header_buffer.find(b"\n")
+                                separator_length = 1
+                            if first_line_end >= 0 and bytes(header_buffer[:first_line_end]).startswith(b"ICY 200 OK"):
+                                header_end = first_line_end
+                            else:
+                                continue
 
                         found_header=True
                         header_bytes = bytes(header_buffer[:header_end])
@@ -406,7 +414,8 @@ class NtripClient(object):
                                     write_stream_data(decoded_chunk)
                             except ChunkedDecodeError as exc:
                                 sys.stderr.write(f"Caster response declared Transfer-Encoding: chunked, but stream data was not valid chunked encoding: {exc}\n")
-                                decode_failed = True
+                                decoder = None
+                                write_stream_data(initial_body)
                         else:
                             write_stream_data(initial_body)
 
@@ -426,8 +435,8 @@ class NtripClient(object):
                                         write_stream_data(decoded_chunk)
                                 except ChunkedDecodeError as exc:
                                     sys.stderr.write(f"Caster response declared Transfer-Encoding: chunked, but stream data was not valid chunked encoding: {exc}\n")
-                                    decode_failed = True
-                                    data = False
+                                    decoder = None
+                                    write_stream_data(data)
                             else:
                                 write_stream_data(data)
 #                            print (datetime.datetime.now()-connectTime)

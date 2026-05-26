@@ -73,7 +73,7 @@ If `Header file` is set, header output is written to that file. If no header fil
 
 ## Chunked Streams
 
-If the caster response includes `Transfer-Encoding: chunked`, the client removes the chunk framing before writing correction data to stdout, an output file, or UDP. If a response advertises chunked encoding but the stream data is not valid chunked data, the client writes an error to stderr.
+If the caster response includes `Transfer-Encoding: chunked`, the client removes the chunk framing before writing correction data to stdout, an output file, or UDP. If a response advertises chunked encoding but the stream data is not valid chunked data, the client writes an error to stderr and passes the raw stream data through.
 
 ## Command-Line Usage
 

@@ -90,7 +90,7 @@ Normal stream handling:
 - Subsequent socket reads are decoded before writing to stdout, an output file, or UDP.
 - A zero-length chunk stops the stream.
 
-If a response advertises chunked encoding but the body is not valid chunked data, `ChunkedDecodeError` is caught and an error is written to stderr.
+If a response advertises chunked encoding but the body is not valid chunked data, `ChunkedDecodeError` is caught, an error is written to stderr, and the raw stream data is passed through.
 
 Source-table handling also checks for chunked encoding and decodes the body before parsing `STR;...` records.
 
