@@ -34,12 +34,12 @@ import argparse
 
 version=0.4
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
-DEFAULT_CONFIG_PATH = Path.home() / ".ntripclient.json"
+DEFAULT_CONFIG_PATH = Path.home() / "ntripclient.ntrip"
 
 CONFIG_DEFAULTS = {
     "mountpoint": "",
-    "caster": "",
-    "port": None,
+    "caster": "SPS855.com",
+    "port": 2101,
     "user": "IBS",
     "password": "IBS",
     "org": "",
@@ -94,7 +94,8 @@ class NtripClient(object):
                  headerOutput=False,
                  maxConnectTime=0,
                  GGA=False,
-                 HTTP="1.1"
+                 HTTP="1.1",
+                 stop_event=None
                  ):
         self.buffer=buffer
         self.user=base64.b64encode(bytes(user,'utf-8')).decode("utf-8")
@@ -117,6 +118,7 @@ class NtripClient(object):
         self.maxConnectTime=maxConnectTime
         self.GGA=GGA
         self.HTTP=HTTP
+        self.stop_event = stop_event
 
         self.socket=None
 
@@ -127,6 +129,19 @@ class NtripClient(object):
         else:
             self.UDP_socket=None
 
+    def stop(self):
+        if self.stop_event:
+            self.stop_event.set()
+        if self.socket:
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+            self.socket=None
 
     def setPosition(self, lat, lon):
         self.flagN="N"
@@ -191,7 +206,7 @@ class NtripClient(object):
         if self.maxConnectTime > 0 :
             EndConnect=datetime.timedelta(seconds=self.maxConnectTime)
         try:
-            while reconnectTry<=maxReconnect:
+            while reconnectTry<=maxReconnect and not self.should_stop():
                 found_header=False
                 if self.verbose:
                     sys.stderr.write('Connection {0} of {1}\n'.format(reconnectTry,maxReconnect))
@@ -218,8 +233,13 @@ class NtripClient(object):
                     self.socket.settimeout(10)
 #                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256)
                     self.socket.sendall(self.getMountPointBytes())
-                    while not found_header:
-                        casterResponse=self.socket.recv(40960) #Note that the is does not handle really large source tables.
+                    while not found_header and not self.should_stop():
+                        try:
+                            casterResponse=self.socket.recv(40960) #Note that the is does not handle really large source tables.
+                        except OSError:
+                            if self.should_stop():
+                                return
+                            raise
 
 #                        print(casterResponse)
                         header_lines = casterResponse.decode('utf-8').split("\r\n")
@@ -293,7 +313,7 @@ class NtripClient(object):
 
 
                     data = "Initial data"
-                    while data:
+                    while data and not self.should_stop():
                         try:
 #                            print("\nSleeping")
 #                            time.sleep(0.01)
@@ -328,6 +348,9 @@ class NtripClient(object):
                                 sys.stderr.write('Connection Error\n')
                             data=False
 
+                    if self.should_stop():
+                        return
+
                     if self.verbose:
                         sys.stderr.write('Closing Connection\n')
                     self.socket.close()
@@ -335,7 +358,7 @@ class NtripClient(object):
 
                     if reconnectTry < maxReconnect :
                         sys.stderr.write( "%s No Connection to NtripCaster.  Trying again in %i seconds\n" % (datetime.datetime.now(), sleepTime))
-                        time.sleep(sleepTime)
+                        self.wait_or_stop(sleepTime)
                         sleepTime *= factor
 
                         if sleepTime>maxReconnectTime:
@@ -352,7 +375,7 @@ class NtripClient(object):
 
                     if reconnectTry < maxReconnect :
                         sys.stderr.write( "%s No Connection to NtripCaster.  Trying again in %i seconds\n" % (datetime.datetime.now(), sleepTime))
-                        time.sleep(sleepTime)
+                        self.wait_or_stop(sleepTime)
                         sleepTime *= factor
                         if sleepTime>maxReconnectTime:
                             sleepTime=maxReconnectTime
@@ -362,6 +385,15 @@ class NtripClient(object):
             if self.socket:
                 self.socket.close()
             sys.exit()
+
+    def should_stop(self):
+        return self.stop_event is not None and self.stop_event.is_set()
+
+    def wait_or_stop(self, seconds):
+        if self.stop_event:
+            self.stop_event.wait(seconds)
+        else:
+            time.sleep(seconds)
 
 def load_config_file(path, require=False):
     config_path = Path(path).expanduser()
@@ -481,8 +513,8 @@ def build_arg_parser():
     parser.add_argument("--save-config", nargs="?", const=None, metavar="FILE", help="Save the effective parameters to FILE, or to the active config file if FILE is omitted.")
 
     parser.add_argument('mountpoint', nargs='?', type=str, help='The Ntrip mountpoint.')
-    parser.add_argument('caster', nargs='?', type=str, help='The Ntripcaster hostname or IP address.')
-    parser.add_argument('port', nargs='?', type=int, help='The Ntripcaster port number. Default of 2101')
+    parser.add_argument('caster', nargs='?', type=str, help='The Ntripcaster hostname or IP address. Default: SPS855.com')
+    parser.add_argument('port', nargs='?', type=int, help='The Ntripcaster port number. Default: 2101')
 
     parser.add_argument("-u", "--user", type=str, help="The Ntripcaster username. Default: IBS")
     parser.add_argument("-p", "--password", type=str, help="The Ntripcaster password. Default: IBS")
@@ -497,9 +529,9 @@ def build_arg_parser():
     parser.add_argument("--no-verbose", dest="verbose", action="store_false", default=argparse.SUPPRESS, help="Disable verbose output from a config file.")
     parser.add_argument("-T", "--Tell", action="store_true", default=argparse.SUPPRESS, help="Tell Settings.")
     parser.add_argument("--no-Tell", dest="Tell", action="store_false", default=argparse.SUPPRESS, help="Disable Tell output from a config file.")
-    parser.add_argument("-s", "--ssl", action="store_true", default=argparse.SUPPRESS, help="Use SSL for the connection.")
-    parser.add_argument("--no-ssl", dest="ssl", action="store_false", default=argparse.SUPPRESS, help="Disable SSL from a config file.")
-    parser.add_argument("--ssl-cafile", type=str, metavar="PEM", help="Trust this CA bundle or server PEM when verifying TLS.")
+    parser.add_argument("-s", "--ssl", "--tls", dest="ssl", action="store_true", default=argparse.SUPPRESS, help="Use TLS for the connection.")
+    parser.add_argument("--no-ssl", "--no-tls", dest="ssl", action="store_false", default=argparse.SUPPRESS, help="Disable TLS from a config file.")
+    parser.add_argument("--ssl-cafile", type=str, metavar="PEM", help="Trust this CA bundle or server PEM when validating TLS.")
     parser.add_argument("-k", "--ssl-insecure", action="store_true", default=argparse.SUPPRESS, help="Disable TLS certificate verification.")
     parser.add_argument("--ssl-secure", dest="ssl_insecure", action="store_false", default=argparse.SUPPRESS, help="Enable TLS certificate verification from a config file.")
     parser.add_argument("-H", "--host", action="store_true", default=argparse.SUPPRESS, help="Include host header; should be on for IBSS.")
@@ -521,6 +553,11 @@ def apply_cli_options(config, options):
     for key in CONFIG_DEFAULTS:
         if hasattr(options, key):
             config[key] = getattr(options, key)
+    if hasattr(options, "ssl") and not hasattr(options, "port"):
+        if options.ssl and config.get("port") in (None, 2101):
+            config["port"] = 52101
+        elif not options.ssl and config.get("port") in (None, 52101):
+            config["port"] = 2101
     return config
 
 
@@ -551,7 +588,7 @@ def build_ntrip_args(config):
     ntripArgs["mountpoint"] = mountpoint
 
     if config["org"]:
-        if config["caster"]:
+        if config["caster"] and config["caster"] != CONFIG_DEFAULTS["caster"]:
             raise ValueError("Caster should not be provided when using --org/IBSS mode")
         ntripArgs["user"] = config["user"] + "." + config["org"] + ":" + config["password"]
         if config["baseorg"]:
@@ -577,6 +614,123 @@ def build_ntrip_args(config):
     return ntripArgs, config
 
 
+def build_source_table_args(config):
+    source_config = dict(config)
+    source_config["mountpoint"] = source_config.get("mountpoint") or "/"
+    ntripArgs, normalized = build_ntrip_args(source_config)
+    ntripArgs["mountpoint"] = "/"
+    return ntripArgs, normalized
+
+
+def connect_ntrip_socket(ntripArgs, timeout=15):
+    ntrip_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if ntripArgs["ssl"]:
+        import ssl
+        if ntripArgs["ssl_insecure"]:
+            context = ssl._create_unverified_context()
+        else:
+            context = ssl.create_default_context()
+            if ntripArgs["ssl_cafile"]:
+                context.load_verify_locations(cafile=ntripArgs["ssl_cafile"])
+        ntrip_socket = context.wrap_socket(ntrip_socket, server_hostname=ntripArgs["caster"])
+
+    ntrip_socket.settimeout(timeout)
+    error_indicator = ntrip_socket.connect_ex((ntripArgs["caster"], ntripArgs["port"]))
+    if error_indicator != 0:
+        ntrip_socket.close()
+        raise OSError(error_indicator, os.strerror(error_indicator))
+    return ntrip_socket
+
+
+def get_source_table_request_bytes(ntripArgs):
+    if ntripArgs["HTTP"] == "0.9":
+        request = "GET / \r\n"
+    else:
+        request = "GET / HTTP/%s\r\n" % ntripArgs["HTTP"]
+
+    request += "User-Agent: %s\r\n" % useragent
+    request += "Authorization: Basic %s\r\n" % base64.b64encode(bytes(ntripArgs["user"], "utf-8")).decode("utf-8")
+    request += "Host: %s:%i\r\n" % (ntripArgs["caster"], ntripArgs["port"])
+    if ntripArgs["V2"]:
+        request += "Ntrip-Version: Ntrip/2.0\r\n"
+    request += "Connection: close\r\n\r\n"
+    return bytes(request, "ascii")
+
+
+def read_source_table(config):
+    ntripArgs, config = build_source_table_args(config)
+    response = bytearray()
+    ntrip_socket = connect_ntrip_socket(ntripArgs)
+    try:
+        ntrip_socket.sendall(get_source_table_request_bytes(ntripArgs))
+        while len(response) < 2 * 1024 * 1024:
+            chunk = ntrip_socket.recv(4096)
+            if not chunk:
+                break
+            response.extend(chunk)
+            if b"ENDSOURCETABLE" in response:
+                break
+    finally:
+        ntrip_socket.close()
+
+    source_table = response.decode("utf-8", errors="replace")
+    write_source_table_response(source_table, config)
+    if "401 Unauthorized" in source_table:
+        raise ValueError("Unauthorized request")
+    if "404 Not Found" in source_table:
+        raise ValueError("Caster did not provide a source table")
+
+    mountpoints = parse_source_table(source_table)
+    if not mountpoints:
+        raise ValueError("No mountpoints were found in the source table")
+    return mountpoints
+
+
+def write_source_table_response(source_table, config):
+    header_path = optional_string(config.get("HeaderFile"))
+    if header_path:
+        with open(Path(header_path).expanduser(), "w", encoding="utf-8") as header_file:
+            header_file.write(source_table)
+            if source_table and not source_table.endswith("\n"):
+                header_file.write("\n")
+        return
+
+    sys.stderr.write(source_table)
+    if source_table and not source_table.endswith("\n"):
+        sys.stderr.write("\n")
+
+
+def parse_source_table(source_table):
+    mountpoints = []
+    for line in source_table.splitlines():
+        line = line.strip()
+        if not line.startswith("STR;"):
+            continue
+
+        fields = line.split(";")
+        mountpoint = {
+            "mountpoint": fields[1] if len(fields) > 1 else "",
+            "identifier": fields[2] if len(fields) > 2 else "",
+            "format": fields[3] if len(fields) > 3 else "",
+            "format_details": fields[4] if len(fields) > 4 else "",
+            "network": fields[7] if len(fields) > 7 else "",
+            "country": fields[8] if len(fields) > 8 else "",
+            "latitude": fields[9] if len(fields) > 9 else "",
+            "longitude": fields[10] if len(fields) > 10 else "",
+        }
+        if mountpoint["mountpoint"]:
+            mountpoints.append(mountpoint)
+
+    return sorted(mountpoints, key=lambda item: item["mountpoint"].lower())
+
+
+def config_filename_for_mountpoint(mountpoint):
+    mountpoint = optional_string(mountpoint) or "ntripclient"
+    stem = Path(mountpoint.lstrip("/")).name or "ntripclient"
+    sanitized = "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in stem)
+    return f"{sanitized or 'ntripclient'}.ntrip"
+
+
 def print_connection_settings(ntripArgs, config):
     print("Server: " + ntripArgs["caster"])
     print("Port: " + str(ntripArgs["port"]))
@@ -591,13 +745,13 @@ def print_connection_settings(ntripArgs, config):
     else:
         print("NTRIP: V1")
     if ntripArgs["ssl"]:
-        print("SSL Connection")
+        print("TLS Connection")
     else:
         print("Uncrypted Connection")
     print("")
 
 
-def run_client(config):
+def run_client(config, stop_event=None, client_callback=None):
     global maxReconnect
 
     ntripArgs, config = build_ntrip_args(config)
@@ -630,10 +784,14 @@ def run_client(config):
         ntripArgs['headerOutput'] = True
         headerFileOutput = True
 
-    n = NtripClient(**ntripArgs)
+    n = NtripClient(**ntripArgs, stop_event=stop_event)
+    if client_callback:
+        client_callback(n)
     try:
         n.readData()
     finally:
+        if client_callback:
+            client_callback(None)
         if fileOutput:
             f.close()
         if headerFileOutput:
@@ -651,33 +809,63 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"Could not load config file {config_path}: {exc}", file=sys.stderr)
 
+    if config_path == DEFAULT_CONFIG_PATH and not config_path.exists():
+        config_path = Path.home() / config_filename_for_mountpoint(config.get("mountpoint"))
+
     root = tk.Tk()
-    root.title("NtripClient")
+    root.title(f"NtripClient - {config_path}")
     root.geometry("650x720")
 
     path_var = tk.StringVar(value=str(config_path))
-    status_var = tk.StringVar(value="Enter connection parameters, then save or start the client.")
+    status_var = tk.StringVar(value="Enter connection parameters. Click Save only when you want to write a config file.")
+    config_path_chosen = {"value": False}
+    client_state = {"event": None, "client": None, "thread": None}
+
+    def update_window_title(*_):
+        root.title(f"NtripClient - {path_var.get()}")
+
+    def center_child_window(child, parent, width=None, height=None):
+        parent.update_idletasks()
+        child.update_idletasks()
+
+        window_width = width or child.winfo_width()
+        window_height = height or child.winfo_height()
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+
+        x = parent_x + max((parent_width - window_width) // 2, 0)
+        y = parent_y + max((parent_height - window_height) // 2, 0)
+        child.geometry(f"{window_width}x{window_height}{x:+d}{y:+d}")
+
+    path_var.trace_add("write", update_window_title)
 
     container = ttk.Frame(root, padding=12)
     container.pack(fill="both", expand=True)
 
     path_frame = ttk.Frame(container)
     path_frame.pack(fill="x", pady=(0, 8))
-    ttk.Label(path_frame, text="Config file").pack(side="left")
-    path_entry = ttk.Entry(path_frame, textvariable=path_var)
-    path_entry.pack(side="left", fill="x", expand=True, padx=8)
+    ttk.Label(path_frame, text="Config file is shown in the window title.").pack(side="left")
 
     def browse_config():
-        selected = filedialog.asksaveasfilename(
+        initial_path = Path(path_var.get()).expanduser()
+        selected = filedialog.askopenfilename(
             title="Choose config file",
-            initialfile=Path(path_var.get()).name,
-            defaultextension=".json",
-            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+            initialdir=str(initial_path.parent),
+            filetypes=(("NTRIP config files", "*.ntrip"), ("JSON files", "*.json"), ("All files", "*.*")),
         )
         if selected:
+            selected_path = Path(selected).expanduser()
+            config_path_chosen["value"] = True
             path_var.set(selected)
-
-    ttk.Button(path_frame, text="Browse", command=browse_config).pack(side="left")
+            try:
+                selected_config = CONFIG_DEFAULTS.copy()
+                selected_config.update(load_config_file(selected_path, require=True))
+                apply_config_to_fields(normalize_config(selected_config))
+                status_var.set(f"Loaded settings from {selected_path}")
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                messagebox.showerror("NtripClient", str(exc))
 
     canvas = tk.Canvas(container, highlightthickness=0)
     scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
@@ -703,7 +891,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         ("UDP", "UDP broadcast port", "entry"),
         ("maxConnectTime", "Max connection time", "entry"),
         ("HTTP", "HTTP version", "combo"),
-        ("ssl_cafile", "SSL CA file", "file"),
+        ("ssl_cafile", "TLS CA file", "file"),
         ("outputFile", "Output file", "savefile"),
         ("HeaderFile", "Header file", "savefile"),
     ]
@@ -711,8 +899,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         ("GGA", "Send GGA"),
         ("verbose", "Verbose output"),
         ("Tell", "Print settings before connecting"),
-        ("ssl", "Use SSL"),
-        ("ssl_insecure", "Disable TLS verification"),
+        ("ssl", "Use TLS"),
         ("host", "Include host header"),
         ("V2", "NTRIP V2"),
         ("headerOutput", "Write headers"),
@@ -720,6 +907,8 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
 
     text_vars = {}
     bool_vars = {}
+    widgets = {}
+    mountpoint_button = {"widget": None}
 
     def browse_file(var, save=False):
         if save:
@@ -736,10 +925,16 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         text_vars[key] = var
         if field_type == "combo":
             widget = ttk.Combobox(fields_frame, textvariable=var, values=("0.9", "1.0", "1.1"), state="readonly")
+        elif key == "mountpoint":
+            widget = ttk.Combobox(fields_frame, textvariable=var, values=(), state="normal")
         else:
             show = "*" if field_type == "password" else None
             widget = ttk.Entry(fields_frame, textvariable=var, show=show)
+        widgets[key] = widget
         widget.grid(row=row, column=1, sticky="ew", pady=4)
+        if key == "mountpoint":
+            mountpoint_button["widget"] = ttk.Button(fields_frame, text="Get MountPoints", command=lambda: fetch_mountpoints_from_gui())
+            mountpoint_button["widget"].grid(row=row, column=2, padx=(8, 0), pady=4)
         if field_type in ("file", "savefile"):
             ttk.Button(fields_frame, text="Browse", command=lambda v=var, s=field_type == "savefile": browse_file(v, s)).grid(row=row, column=2, padx=(8, 0), pady=4)
 
@@ -749,11 +944,37 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         bool_vars[key] = var
         ttk.Checkbutton(fields_frame, text=label, variable=var).grid(row=bool_start + index, column=0, columnspan=3, sticky="w", pady=3)
 
+    ssl_validate_var = tk.BooleanVar(value=not bool_value(config.get("ssl_insecure", False)))
+    ttk.Checkbutton(
+        fields_frame,
+        text="Validate TLS certificate",
+        variable=ssl_validate_var,
+    ).grid(row=bool_start + len(bool_fields), column=0, columnspan=3, sticky="w", pady=3)
+
+    def sync_tls_port(*_):
+        port = text_vars["port"].get().strip()
+        if bool_vars["ssl"].get():
+            if port in ("", "2101"):
+                text_vars["port"].set("52101")
+        elif port in ("", "52101"):
+            text_vars["port"].set("2101")
+
+    bool_vars["ssl"].trace_add("write", sync_tls_port)
+
     fields_frame.columnconfigure(1, weight=1)
 
     controls = ttk.Frame(root, padding=(12, 0, 12, 12))
     controls.pack(fill="x")
     ttk.Label(controls, textvariable=status_var).pack(fill="x", pady=(0, 8))
+
+    def refresh_default_config_path(*_):
+        if config_path_chosen["value"]:
+            return
+        current_path = Path(path_var.get()).expanduser()
+        path_var.set(str(current_path.parent / config_filename_for_mountpoint(text_vars["mountpoint"].get())))
+
+    text_vars["mountpoint"].trace_add("write", refresh_default_config_path)
+    refresh_default_config_path()
 
     def collect_config():
         collected = CONFIG_DEFAULTS.copy()
@@ -762,7 +983,16 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
             collected[key] = value if value else None
         for key, var in bool_vars.items():
             collected[key] = var.get()
+        collected["ssl_insecure"] = not ssl_validate_var.get()
         return normalize_config(collected)
+
+    def apply_config_to_fields(new_config):
+        for key, var in text_vars.items():
+            value = new_config.get(key, "")
+            var.set("" if value is None else str(value))
+        for key, var in bool_vars.items():
+            var.set(bool_value(new_config.get(key, False)))
+        ssl_validate_var.set(not bool_value(new_config.get("ssl_insecure", False)))
 
     def save_from_gui():
         collected = collect_config()
@@ -770,37 +1000,187 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         status_var.set(f"Saved settings to {saved_path}")
         return collected
 
-    def start_from_gui():
+    def show_mountpoint_dialog(mountpoints):
+        dialog = tk.Toplevel(root)
+        dialog.title("NTRIP MountPoints")
+        dialog.transient(root)
+
+        table_frame = ttk.Frame(dialog, padding=(12, 12, 12, 0))
+        table_frame.pack(fill="both", expand=True)
+
+        columns = ("mountpoint", "identifier", "format", "network", "country", "latitude", "longitude")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        headings = {
+            "mountpoint": "MountPoint",
+            "identifier": "Base Station",
+            "format": "Format",
+            "network": "Network",
+            "country": "Country",
+            "latitude": "Latitude",
+            "longitude": "Longitude",
+        }
+        mountpoint_width = max(
+            220,
+            min(480, (max([20] + [len(item["mountpoint"]) for item in mountpoints]) * 10) + 30),
+        )
+        widths = {
+            "mountpoint": mountpoint_width,
+            "identifier": 180,
+            "format": 90,
+            "network": 110,
+            "country": 80,
+            "latitude": 90,
+            "longitude": 90,
+        }
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(column, width=widths[column], anchor="w")
+
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        for mountpoint in mountpoints:
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    mountpoint["mountpoint"],
+                    mountpoint["identifier"],
+                    mountpoint["format"],
+                    mountpoint["network"],
+                    mountpoint["country"],
+                    mountpoint["latitude"],
+                    mountpoint["longitude"],
+                ),
+            )
+
+        def close_mountpoint_dialog():
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+            root.lift()
+            root.focus_force()
+            widgets["mountpoint"].focus_set()
+
+        def use_selected_mountpoint():
+            selection = tree.selection()
+            if not selection:
+                return
+            values = tree.item(selection[0], "values")
+            text_vars["mountpoint"].set(values[0])
+            status_var.set(f"Selected mountpoint {values[0]}")
+            close_mountpoint_dialog()
+
+        tree.bind("<Double-1>", lambda event: use_selected_mountpoint())
+        button_frame = ttk.Frame(dialog, padding=(12, 0, 12, 12))
+        button_frame.pack(fill="x")
+        ttk.Button(button_frame, text="Use Selected", command=use_selected_mountpoint).pack(side="left")
+        ttk.Button(button_frame, text="Cancel", command=close_mountpoint_dialog).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close_mountpoint_dialog)
+        dialog_width = min(1200, sum(widths.values()) + 80)
+        center_child_window(dialog, root, dialog_width, 420)
+        dialog.grab_set()
+        tree.focus_set()
+
+    def fetch_mountpoints_from_gui():
         try:
-            collected = save_from_gui()
+            collected = collect_config()
+        except Exception as exc:
+            messagebox.showerror("NtripClient", str(exc))
+            return
+
+        if mountpoint_button["widget"]:
+            mountpoint_button["widget"].configure(state="disabled")
+        status_var.set("Fetching mountpoints from caster...")
+
+        def worker():
+            try:
+                mountpoints = read_source_table(collected)
+                root.after(0, lambda: widgets["mountpoint"].configure(values=[item["mountpoint"] for item in mountpoints]))
+                root.after(0, lambda: show_mountpoint_dialog(mountpoints))
+                root.after(0, lambda: status_var.set(f"Loaded {len(mountpoints)} mountpoints."))
+            except Exception as exc:
+                error = str(exc)
+                root.after(0, lambda error=error: messagebox.showerror("NtripClient", error))
+                root.after(0, lambda: status_var.set("Could not fetch mountpoints."))
+            finally:
+                if mountpoint_button["widget"]:
+                    root.after(0, lambda: mountpoint_button["widget"].configure(state="normal"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def stop_from_gui():
+        if client_state["event"]:
+            client_state["event"].set()
+        if client_state["client"]:
+            client_state["client"].stop()
+        start_button.configure(state="disabled")
+        status_var.set("Stopping client...")
+
+    def start_from_gui():
+        if client_state["thread"] and client_state["thread"].is_alive():
+            stop_from_gui()
+            return
+
+        try:
+            collected = collect_config()
             build_ntrip_args(collected)
         except Exception as exc:
             messagebox.showerror("NtripClient", str(exc))
             return
 
-        start_button.configure(state="disabled")
+        stop_event = threading.Event()
+        client_state["event"] = stop_event
+        start_button.configure(text="Stop", state="normal")
         status_var.set("Client running...")
+
+        def set_client(client):
+            client_state["client"] = client
 
         def worker():
             try:
-                run_client(collected)
+                run_client(collected, stop_event=stop_event, client_callback=set_client)
                 root.after(0, lambda: status_var.set("Client stopped."))
             except SystemExit as exc:
                 code = exc.code
-                root.after(0, lambda code=code: status_var.set(f"Client exited with code {code}."))
+                if stop_event.is_set():
+                    root.after(0, lambda: status_var.set("Client stopped."))
+                else:
+                    root.after(0, lambda code=code: status_var.set(f"Client exited with code {code}."))
             except Exception as exc:
                 error = str(exc)
-                root.after(0, lambda error=error: messagebox.showerror("NtripClient", error))
-                root.after(0, lambda: status_var.set("Client stopped with an error."))
+                if stop_event.is_set():
+                    root.after(0, lambda: status_var.set("Client stopped."))
+                else:
+                    root.after(0, lambda error=error: messagebox.showerror("NtripClient", error))
+                    root.after(0, lambda: status_var.set("Client stopped with an error."))
             finally:
-                root.after(0, lambda: start_button.configure(state="normal"))
+                def reset_start_button():
+                    client_state["event"] = None
+                    client_state["client"] = None
+                    client_state["thread"] = None
+                    start_button.configure(text="Start", state="normal")
+                root.after(0, reset_start_button)
 
-        threading.Thread(target=worker, daemon=True).start()
+        client_state["thread"] = threading.Thread(target=worker, daemon=True)
+        client_state["thread"].start()
 
-    ttk.Button(controls, text="Save Settings", command=lambda: save_from_gui()).pack(side="left")
-    start_button = ttk.Button(controls, text="Save and Start", command=start_from_gui)
+    ttk.Button(controls, text="Browse", command=browse_config).pack(side="left")
+    ttk.Button(controls, text="Save", command=lambda: save_from_gui()).pack(side="left", padx=(8, 0))
+    start_button = ttk.Button(controls, text="Start", command=start_from_gui)
     start_button.pack(side="left", padx=(8, 0))
-    ttk.Button(controls, text="Quit", command=root.destroy).pack(side="right")
+
+    def close_gui():
+        if client_state["thread"] and client_state["thread"].is_alive():
+            stop_from_gui()
+        root.destroy()
+
+    ttk.Button(controls, text="Quit", command=close_gui).pack(side="right")
+    root.protocol("WM_DELETE_WINDOW", close_gui)
 
     root.mainloop()
 
