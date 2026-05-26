@@ -53,7 +53,7 @@ CONFIG_DEFAULTS = {
     "Tell": False,
     "ssl": False,
     "ssl_cafile": "",
-    "ssl_insecure": False,
+    "ssl_insecure": True,
     "host": False,
     "maxReconnect": 1,
     "UDP": None,
@@ -310,8 +310,6 @@ class NtripClient(object):
                                     if self.verbose:
                                         sys.stderr.write("%s" % (gga.decode('ascii')))
                                     self.socket.sendall(gga)
-                            else:
-                                sys.stderr.write(line+"\n")
 
 
 
@@ -581,9 +579,9 @@ def build_arg_parser():
     parser.add_argument("-f", "--outputFile", type=str, help="Write to this file, instead of stdout.")
     parser.add_argument("-m", "--maxtime", type=int, dest="maxConnectTime", help="Maximum length of the connection, in seconds. Default: 0")
     parser.add_argument('--HTTP', type=str, choices=['0.9', '1.0', '1.1'], help='Specify the HTTP protocol version.')
-    parser.add_argument("--Header", action="store_true", dest="headerOutput", default=argparse.SUPPRESS, help="Write headers to stderr.")
+    parser.add_argument("--Header", action="store_true", dest="headerOutput", default=argparse.SUPPRESS, help="Output headers to stderr.")
     parser.add_argument("--no-Header", dest="headerOutput", action="store_false", default=argparse.SUPPRESS, help="Disable header output from a config file.")
-    parser.add_argument("--HeaderFile", type=str, help="Write headers to this file, instead of stderr.")
+    parser.add_argument("--HeaderFile", type=str, help="Output headers to this file, instead of stderr.")
     return parser
 
 
@@ -727,6 +725,9 @@ def read_source_table(config):
 
 
 def write_source_table_exchange(request, response, config):
+    if not bool_value(config.get("headerOutput", False)):
+        return
+
     exchange = f">>> Source table request\n{request}\n<<< Source table response\n{response}"
     if response and not response.endswith("\n"):
         exchange += "\n"
@@ -830,10 +831,9 @@ def run_client(config, stop_event=None, client_callback=None):
             raise ValueError("An output file is required when stdout is not available") from exc
         ntripArgs['out'] = stdout
 
-    if header_path:
+    if config["headerOutput"] and header_path:
         h = open(Path(header_path).expanduser(), 'w')
         ntripArgs['headerFile'] = h
-        ntripArgs['headerOutput'] = True
         headerFileOutput = True
 
     n = NtripClient(**ntripArgs, stop_event=stop_event)
@@ -854,6 +854,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
+    launch_dir = Path.cwd()
     config_path = Path(config_path).expanduser()
     config_path_chosen_on_startup = config_path != DEFAULT_CONFIG_PATH
     if config_path == DEFAULT_CONFIG_PATH:
@@ -869,7 +870,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         print(f"Could not load config file {config_path}: {exc}", file=sys.stderr)
 
     if config_path == DEFAULT_CONFIG_PATH and not config_path.exists():
-        config_path = Path.home() / config_filename_for_mountpoint(config.get("mountpoint"))
+        config_path = launch_dir / config_filename_for_mountpoint(config.get("mountpoint"))
 
     root = tk.Tk()
     root.title(f"NtripClient - {config_path}")
@@ -903,11 +904,24 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     container = ttk.Frame(root, padding=12)
     container.pack(fill="both", expand=True)
 
+    def config_dialog_dir():
+        current_path = Path(path_var.get()).expanduser()
+        if config_path_chosen["value"] or current_path.exists():
+            return current_path.parent
+        return launch_dir
+
+    def file_dialog_dir(var=None):
+        if var:
+            current_value = optional_string(var.get())
+            if current_value:
+                current_path = Path(current_value).expanduser()
+                return current_path.parent
+        return config_dialog_dir()
+
     def browse_config():
-        initial_path = Path(path_var.get()).expanduser()
         selected = filedialog.askopenfilename(
             title="Choose config file",
-            initialdir=str(initial_path.parent),
+            initialdir=str(config_dialog_dir()),
             filetypes=(("NTRIP config files", "*.ntrip"), ("JSON files", "*.json"), ("All files", "*.*")),
         )
         if selected:
@@ -959,7 +973,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         ("Tell", "Print settings before connecting"),
         ("host", "Include host header"),
         ("V2", "NTRIP V2"),
-        ("headerOutput", "Write headers"),
+        ("headerOutput", "Output headers"),
     ]
 
     text_vars = {}
@@ -969,9 +983,9 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
 
     def browse_file(var, save=False):
         if save:
-            selected = filedialog.asksaveasfilename(title="Choose file")
+            selected = filedialog.asksaveasfilename(title="Choose file", initialdir=str(file_dialog_dir(var)))
         else:
-            selected = filedialog.askopenfilename(title="Choose file")
+            selected = filedialog.askopenfilename(title="Choose file", initialdir=str(file_dialog_dir(var)))
         if selected:
             var.set(selected)
 
@@ -1049,8 +1063,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     def refresh_default_config_path(*_):
         if config_path_chosen["value"]:
             return
-        current_path = Path(path_var.get()).expanduser()
-        path_var.set(str(current_path.parent / config_filename_for_mountpoint(text_vars["mountpoint"].get())))
+        path_var.set(str(launch_dir / config_filename_for_mountpoint(text_vars["mountpoint"].get())))
 
     text_vars["mountpoint"].trace_add("write", refresh_default_config_path)
     refresh_default_config_path()
@@ -1080,10 +1093,9 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
 
     def save_from_gui():
         collected = collect_config()
-        current_path = Path(path_var.get()).expanduser()
         selected = filedialog.asksaveasfilename(
             title="Save config file",
-            initialdir=str(current_path.parent),
+            initialdir=str(config_dialog_dir()),
             initialfile=config_filename_for_connection(collected),
             defaultextension=".ntrip",
             filetypes=(("NTRIP config files", "*.ntrip"), ("JSON files", "*.json"), ("All files", "*.*")),
@@ -1482,13 +1494,13 @@ def _legacy_main_unused():
         action="store_true",
         dest="headerOutput",
         default=False,
-        help="Write headers to stderr."
+        help="Output headers to stderr."
     )
     parser.add_argument(
         "--HeaderFile",
         type=str,
         default=None,
-        help="Write headers to this file, instead of stderr."
+        help="Output headers to this file, instead of stderr."
     )
 
     # Parse the arguments
