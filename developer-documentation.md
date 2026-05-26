@@ -59,6 +59,7 @@ Key behavior:
 - Request header creation through `getMountPointBytes()`.
 - Caster response header parsing.
 - Optional GGA transmission.
+- Chunked transfer decoding when the caster sends `Transfer-Encoding: chunked`.
 - Data streaming to stdout or an output file.
 - Optional UDP broadcast.
 - Reconnect behavior.
@@ -77,6 +78,21 @@ When enabled:
 - Source-table request and response are written by `write_source_table_exchange()`.
 
 When `HeaderFile` is set and header output is enabled, output goes to that file. Otherwise it goes to stderr. Header output should not be written to stdout, because stdout may carry binary correction data.
+
+## Chunked Transfer Handling
+
+`ChunkedDecoder` removes HTTP chunk framing from caster data when the response headers include `Transfer-Encoding: chunked`.
+
+Normal stream handling:
+
+- Header parsing detects `Transfer-Encoding: chunked`.
+- Any body bytes received with the header block are fed into the decoder first.
+- Subsequent socket reads are decoded before writing to stdout, an output file, or UDP.
+- A zero-length chunk stops the stream.
+
+If a response advertises chunked encoding but the body is not valid chunked data, `ChunkedDecodeError` is caught and an error is written to stderr.
+
+Source-table handling also checks for chunked encoding and decodes the body before parsing `STR;...` records.
 
 ## Source Table Lookup
 

@@ -72,6 +72,63 @@ maxReconnectTime=1200
 sleepTime=1 # So the first one is 1 second
 
 
+class ChunkedDecodeError(ValueError):
+    pass
+
+
+class ChunkedDecoder:
+    def __init__(self):
+        self.buffer = bytearray()
+        self.chunk_size = None
+        self.done = False
+
+    def feed(self, data):
+        if self.done:
+            return []
+
+        if data:
+            self.buffer.extend(data)
+
+        decoded = []
+        while True:
+            if self.chunk_size is None:
+                line_end = self.buffer.find(b"\r\n")
+                if line_end < 0:
+                    if self.buffer and chr(self.buffer[0]).lower() not in "0123456789abcdef":
+                        raise ChunkedDecodeError("chunked stream did not start with a chunk size")
+                    if len(self.buffer) > 128:
+                        raise ChunkedDecodeError("chunk size line was too long")
+                    break
+
+                line = bytes(self.buffer[:line_end])
+                del self.buffer[:line_end + 2]
+                size_text = line.split(b";", 1)[0].strip()
+                if not size_text:
+                    raise ChunkedDecodeError("empty chunk size")
+                try:
+                    self.chunk_size = int(size_text, 16)
+                except ValueError as exc:
+                    raise ChunkedDecodeError(f"invalid chunk size: {size_text!r}") from exc
+
+                if self.chunk_size == 0:
+                    self.done = True
+                    return decoded
+
+            if len(self.buffer) < self.chunk_size + 2:
+                break
+
+            chunk = bytes(self.buffer[:self.chunk_size])
+            separator = bytes(self.buffer[self.chunk_size:self.chunk_size + 2])
+            if separator != b"\r\n":
+                raise ChunkedDecodeError("chunk was not followed by CRLF")
+
+            decoded.append(chunk)
+            del self.buffer[:self.chunk_size + 2]
+            self.chunk_size = None
+
+        return decoded
+
+
 
 class NtripClient(object):
     def __init__(self,
@@ -237,6 +294,9 @@ class NtripClient(object):
                     self.socket.settimeout(10)
 #                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256)
                     self.socket.sendall(self.getMountPointBytes())
+                    header_buffer = bytearray()
+                    initial_body = b""
+                    chunked_response = False
                     while not found_header and not self.should_stop():
                         try:
                             casterResponse=self.socket.recv(40960) #Note that the is does not handle really large source tables.
@@ -245,23 +305,38 @@ class NtripClient(object):
                                 return
                             raise
 
-#                        print(casterResponse)
-                        header_lines = casterResponse.decode('utf-8').split("\r\n")
+                        if not casterResponse:
+                            break
+
+                        header_buffer.extend(casterResponse)
+                        header_end = header_buffer.find(b"\r\n\r\n")
+                        separator_length = 4
+                        if header_end < 0:
+                            header_end = header_buffer.find(b"\n\n")
+                            separator_length = 2
+                        if header_end < 0:
+                            continue
+
+                        found_header=True
+                        header_bytes = bytes(header_buffer[:header_end])
+                        initial_body = bytes(header_buffer[header_end + separator_length:])
+                        header_text = header_bytes.decode('utf-8', errors='replace')
+                        header_lines = header_text.replace("\r\n", "\n").split("\n")
+                        chunked_response = any(
+                            line.lower().startswith("transfer-encoding:")
+                            and "chunked" in line.lower()
+                            for line in header_lines
+                        )
 
                         for line in header_lines:
-                            if line=="":
-                                if not found_header:
-                                    found_header=True
-                                    if self.verbose:
-                                        sys.stderr.write("End Of Header"+"\n")
-                            else:
-                                if self.verbose:
-                                    if found_header:
-                                        sys.stderr.write("Body: " + line+"\n")
-                                    else:
-                                        sys.stderr.write("Header: " + line+"\n")
+                            if self.verbose:
+                                sys.stderr.write("Header: " + line+"\n")
                             if self.headerOutput:
                                 self.headerFile.write(line+"\n")
+                        if self.verbose:
+                            sys.stderr.write("End Of Header"+"\n")
+                        if self.headerOutput:
+                            self.headerFile.write("\n")
 
 
 
@@ -314,7 +389,28 @@ class NtripClient(object):
 
 
 
-                    data = "Initial data"
+                    decoder = ChunkedDecoder() if chunked_response else None
+                    decode_failed = False
+
+                    def write_stream_data(stream_data):
+                        if not stream_data:
+                            return
+                        self.out.write(stream_data)
+                        if self.UDP_socket:
+                            self.UDP_socket.sendto(stream_data, ('<broadcast>', self.UDP_Port))
+
+                    if initial_body:
+                        if decoder:
+                            try:
+                                for decoded_chunk in decoder.feed(initial_body):
+                                    write_stream_data(decoded_chunk)
+                            except ChunkedDecodeError as exc:
+                                sys.stderr.write(f"Caster response declared Transfer-Encoding: chunked, but stream data was not valid chunked encoding: {exc}\n")
+                                decode_failed = True
+                        else:
+                            write_stream_data(initial_body)
+
+                    data = not decode_failed and not (decoder and decoder.done)
                     while data and not self.should_stop():
                         try:
 #                            print("\nSleeping")
@@ -322,12 +418,18 @@ class NtripClient(object):
 #                            print("\nSleep Finished. " + str(datetime.datetime.now()))
                             data=self.socket.recv(self.buffer)
                             if self.verbose:
-                               sys.stderr.write("%s Data received: %s \n" % (datetime.datetime.now(), len(casterResponse)))
+                               sys.stderr.write("%s Data received: %s \n" % (datetime.datetime.now(), len(data)))
 
-                            self.out.write(data)
-#                            self.out.buffer.write(data)
-                            if self.UDP_socket:
-                                self.UDP_socket.sendto(data, ('<broadcast>', self.UDP_Port))
+                            if decoder:
+                                try:
+                                    for decoded_chunk in decoder.feed(data):
+                                        write_stream_data(decoded_chunk)
+                                except ChunkedDecodeError as exc:
+                                    sys.stderr.write(f"Caster response declared Transfer-Encoding: chunked, but stream data was not valid chunked encoding: {exc}\n")
+                                    decode_failed = True
+                                    data = False
+                            else:
+                                write_stream_data(data)
 #                            print (datetime.datetime.now()-connectTime)
 #                            print(self.maxConnectTime)
                             if self.maxConnectTime :
@@ -349,6 +451,12 @@ class NtripClient(object):
                             if self.verbose:
                                 sys.stderr.write('Connection Error\n')
                             data=False
+
+                        if decoder and decoder.done:
+                            data=False
+
+                    if decoder and not decoder.done and not decode_failed and not self.should_stop():
+                        sys.stderr.write("Caster response declared Transfer-Encoding: chunked, but the stream ended before a terminating chunk was received\n")
 
                     if self.should_stop():
                         return
@@ -658,6 +766,32 @@ def build_source_table_args(config):
     return ntripArgs, normalized
 
 
+def response_uses_chunked_encoding(header_text):
+    return any(
+        line.lower().startswith("transfer-encoding:")
+        and "chunked" in line.lower()
+        for line in header_text.replace("\r\n", "\n").split("\n")
+    )
+
+
+def split_response_header(response):
+    for separator in (b"\r\n\r\n", b"\n\n"):
+        header_end = response.find(separator)
+        if header_end >= 0:
+            return response[:header_end], response[header_end + len(separator):]
+    return b"", response
+
+
+def decode_chunked_body(body):
+    decoder = ChunkedDecoder()
+    decoded = bytearray()
+    for chunk in decoder.feed(body):
+        decoded.extend(chunk)
+    if not decoder.done:
+        raise ChunkedDecodeError("stream ended before a terminating chunk was received")
+    return bytes(decoded)
+
+
 def connect_ntrip_socket(ntripArgs, timeout=15):
     ntrip_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if ntripArgs["ssl"]:
@@ -710,8 +844,18 @@ def read_source_table(config):
     finally:
         ntrip_socket.close()
 
+    raw_response = bytes(response)
+    header_bytes, body = split_response_header(raw_response)
+    header_text = header_bytes.decode("utf-8", errors="replace")
+    if header_bytes and response_uses_chunked_encoding(header_text):
+        try:
+            body = decode_chunked_body(body)
+        except ChunkedDecodeError as exc:
+            sys.stderr.write(f"Caster response declared Transfer-Encoding: chunked, but source table data was not valid chunked encoding: {exc}\n")
+    source_response = header_bytes + (b"\r\n\r\n" if header_bytes else b"") + body
+
     request = request_bytes.decode("ascii", errors="replace")
-    source_table = response.decode("utf-8", errors="replace")
+    source_table = source_response.decode("utf-8", errors="replace")
     write_source_table_exchange(request, source_table, config)
     if "401 Unauthorized" in source_table:
         raise ValueError("Unauthorized request")

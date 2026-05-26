@@ -11,6 +11,7 @@ The main application is `NTRIP Client/NtripClient.py`. Run it with no arguments 
 - Optionally validate TLS certificates with the system trust store or a supplied CA file.
 - Fetch and parse an NTRIP source table from the caster.
 - Select a mountpoint from a source-table dialog.
+- Decode `Transfer-Encoding: chunked` caster responses before forwarding data.
 - Send a GGA sentence when enabled.
 - Stream correction data to stdout or an output file.
 - Optionally broadcast received data over UDP.
@@ -69,6 +70,10 @@ Header output from this request is only written when `Output headers` is enabled
 Enable `Output headers` to capture request and response headers. Header output includes the NTRIP request and caster response headers.
 
 If `Header file` is set, header output is written to that file. If no header file is set, header output goes to stderr. Headers are not written unless `Output headers` is enabled.
+
+## Chunked Streams
+
+If the caster response includes `Transfer-Encoding: chunked`, the client removes the chunk framing before writing correction data to stdout, an output file, or UDP. If a response advertises chunked encoding but the stream data is not valid chunked data, the client writes an error to stderr.
 
 ## Command-Line Usage
 
