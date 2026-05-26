@@ -2,12 +2,18 @@
 echo Starting NTRIP Connection $1
 source ./configuration
 
-if [ $IBSS == 0 ]
+USER_SUFFIX=""
+if [ "${ADD_NUMBER_TO_USER:-0}" = "1" ]
 then
-    USERNAME=$USER$2
+    USER_SUFFIX="${2:-$1}"
+fi
+
+if [ "$IBSS" == "0" ]
+then
+    USERNAME=$USER$USER_SUFFIX
     CASTER=$NTRIP_CASTER
 else
-    USERNAME=$USER$2.$ORG
+    USERNAME=$USER$USER_SUFFIX.$ORG
     CASTER=$BASE_ORG.$NTRIP_CASTER
 fi
 
