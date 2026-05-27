@@ -1,7 +1,6 @@
 name: Build NtripClient Binary
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
 
