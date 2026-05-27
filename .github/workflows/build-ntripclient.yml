@@ -40,7 +40,7 @@ jobs:
             -v "$PWD:/work" \
             -w /work \
             python:3.12-slim \
-            sh -c 'python -m pip install --upgrade pip pyinstaller && pyinstaller --onefile --name "${{ matrix.binary_name }}" "NTRIP Client/NtripClient.py"'
+            sh -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --no-install-recommends binutils && python -m pip install --upgrade pip pyinstaller && pyinstaller --onefile --name "${{ matrix.binary_name }}" "NTRIP Client/NtripClient.py"'
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
