@@ -1,0 +1,102 @@
+name: Build NtripClient Binary
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build ${{ matrix.artifact_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: amd64
+            artifact_name: ntripclient-linux-amd64
+            binary_name: ntripclient
+            artifact_path: dist/ntripclient
+          - platform: arm64
+            artifact_name: ntripclient-linux-arm64
+            binary_name: ntripclient
+            artifact_path: dist/ntripclient
+          - platform: arm/v7
+            artifact_name: ntripclient-linux-arm32
+            binary_name: ntripclient
+            artifact_path: dist/ntripclient
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build binary
+        run: |
+          docker run --rm \
+            --platform "linux/${{ matrix.platform }}" \
+            -v "$PWD:/work" \
+            -w /work \
+            python:3.12-slim \
+            sh -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --no-install-recommends binutils && python -m pip install --upgrade pip pyinstaller && pyinstaller --onefile --name "${{ matrix.binary_name }}" "NTRIP Client/NtripClient.py"'
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+
+  build-macos:
+    name: Build ntripclient-macos-arm64
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build binary
+        run: pyinstaller --onefile --name ntripclient "NTRIP Client/NtripClient.py"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntripclient-macos-arm64
+          path: dist/ntripclient
+          if-no-files-found: error
+
+  build-windows:
+    name: Build ntripclient-windows-amd64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build binary
+        run: pyinstaller --onefile --name ntripclient "NTRIP Client/NtripClient.py"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntripclient-windows-amd64
+          path: dist/ntripclient.exe
+          if-no-files-found: error
