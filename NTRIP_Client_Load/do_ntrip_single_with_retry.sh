@@ -1,6 +1,6 @@
 #! /bin/bash
 echo Starting NTRIP Connection $1
-source ./configuration
+source "${NTRIP_CLIENT_LOAD_CONFIG:-./configuration}"
 
 USER_SUFFIX=""
 if [ "${ADD_NUMBER_TO_USER:-0}" = "1" ]
@@ -27,6 +27,11 @@ do
 #echo    curl -f -o $TMP_DATA_PATH/ntrip_$1.bin --connect-timeout 10 -m $(expr $TEST_TIME - $elapsed_seconds)   -H "Ntrip-Version: Ntrip/2.0" -H "User-Agent: NTRIP CURL_NTRIP_TEST/0.1" -u $USERNAME:$PASS$2  http://$CASTER/$BASE
     curl -f -o $TMP_DATA_PATH/ntrip_$1.bin --connect-timeout 10 -m  $(expr $TEST_TIME - $elapsed_seconds)  -H "Ntrip-Version: Ntrip/2.0" -H "User-Agent: NTRIP CURL_NTRIP_TEST/0.1" -u $USERNAME:$PASS  http://$CASTER/$BASE &>/dev/null
     Result=$?
+    if [ "$Result" != "28" ]
+    then
+       echo NTRIP Connection $1 had a failure with curl result $Result. Expected result 28 for max connection time timeout. >&2
+       sleep 15
+    fi
     CONNECTIONS=$(expr $CONNECTIONS + 1)
     AFTER="$(date +%s)"
     elapsed_seconds="$(expr $AFTER - $BEFORE)"
@@ -43,6 +48,7 @@ fi
 
 echo $1,$Result,$st_size, $(expr $AFTER - $BEFORE),$CONNECTIONS >>ntrip_results.txt
 echo NTRIP Connection $1 ended with a result of $Result
+
 
 if [ $DELETE_FILES ]
 then

@@ -1,5 +1,7 @@
 #! /bin/bash
-source ./configuration
+NTRIP_CLIENT_LOAD_CONFIG="${1:-./configuration}"
+export NTRIP_CLIENT_LOAD_CONFIG
+source "$NTRIP_CLIENT_LOAD_CONFIG"
 #rm /tmp/ntrip_*.bin
 rm ntrip_results.txt
 
@@ -17,7 +19,7 @@ fi
    sleep $STARTUP_DELAY
 done
 
-sleep 1
+sleep 5
 echo Waiting $TEST_TIME seconds for sub processes to finish
 sleep $TEST_TIME
 sleep 15
