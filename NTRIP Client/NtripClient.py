@@ -57,7 +57,7 @@ CONFIG_DEFAULTS = {
     "host": False,
     "maxReconnect": 1,
     "UDP": None,
-    "V2": False,
+    "V2": True,
     "outputFile": "",
     "maxConnectTime": 0,
     "HTTP": "1.1",
@@ -691,8 +691,8 @@ def build_arg_parser():
     parser.add_argument("--no-host", dest="host", action="store_false", default=argparse.SUPPRESS, help="Disable host header from a config file.")
     parser.add_argument("-r", "--Reconnect", dest="maxReconnect", type=int, help="Number of reconnections. Default: 1")
     parser.add_argument("-D", "--UDP", type=int, help="Broadcast received data on the provided port.")
-    parser.add_argument("-2", "--V2", action="store_true", default=argparse.SUPPRESS, help="Make a NTRIP V2 Connection.")
-    parser.add_argument("--no-V2", dest="V2", action="store_false", default=argparse.SUPPRESS, help="Disable NTRIP V2 from a config file.")
+    parser.add_argument("-2", "--V2", action="store_true", default=argparse.SUPPRESS, help="Use NTRIP V2 (default).")
+    parser.add_argument("--V1", dest="V2", action="store_false", default=argparse.SUPPRESS, help="Use NTRIP V1 instead of V2.")
     parser.add_argument("-f", "--outputFile", type=str, help="Write to this file, instead of stdout.")
     parser.add_argument("-m", "--maxtime", type=int, dest="maxConnectTime", help="Maximum length of the connection, in seconds. Default: 0")
     parser.add_argument('--HTTP', type=str, choices=['0.9', '1.0', '1.1'], help='Specify the HTTP protocol version.')
@@ -1023,7 +1023,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         print(f"Could not load config file {config_path}: {exc}", file=sys.stderr)
 
     if config_path == DEFAULT_CONFIG_PATH and not config_path.exists():
-        config_path = launch_dir / config_filename_for_mountpoint(config.get("mountpoint"))
+        config_path = launch_dir / config_filename_for_connection(config)
 
     root = tk.Tk()
     root.title(f"NtripClient - {config_path}")
@@ -1216,9 +1216,14 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     def refresh_default_config_path(*_):
         if config_path_chosen["value"]:
             return
-        path_var.set(str(launch_dir / config_filename_for_mountpoint(text_vars["mountpoint"].get())))
+        draft = CONFIG_DEFAULTS.copy()
+        for key, var in text_vars.items():
+            value = var.get().strip()
+            draft[key] = value if value else None
+        path_var.set(str(launch_dir / config_filename_for_connection(draft)))
 
     text_vars["mountpoint"].trace_add("write", refresh_default_config_path)
+    text_vars["caster"].trace_add("write", refresh_default_config_path)
     refresh_default_config_path()
 
     def collect_config():
@@ -1247,6 +1252,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     def save_from_gui():
         collected = collect_config()
         selected = filedialog.asksaveasfilename(
+            parent=root,
             title="Save config file",
             initialdir=str(config_dialog_dir()),
             initialfile=config_filename_for_connection(collected),
@@ -1617,10 +1623,16 @@ def _legacy_main_unused():
         help="Broadcast received data on the provided port."
     )
     parser.add_argument(
+        "--V1",
+        dest="V2",
+        action="store_false",
+        help="Use NTRIP V1 instead of V2.",
+    )
+    parser.add_argument(
         "-2", "--V2",
         action="store_true",
-        default=False,
-        help="Make a NTRIP V2 Connection."
+        default=True,
+        help="Use NTRIP V2 (default).",
     )
     parser.add_argument(
         "-f", "--outputFile",
