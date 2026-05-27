@@ -32,7 +32,7 @@ from pprint import pprint
 import argparse
 
 
-version=0.4
+version=2.0
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 DEFAULT_CONFIG_PATH = Path.home() / "ntripclient.ntrip"
 LAST_CONFIG_PATH_FILE = Path.home() / ".ntripclient-last.json"
