@@ -32,7 +32,7 @@ from pprint import pprint
 import argparse
 
 
-version=2.0
+version=2.1
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 DEFAULT_CONFIG_PATH = Path.home() / "ntripclient.ntrip"
 LAST_CONFIG_PATH_FILE = Path.home() / ".ntripclient-last.json"
@@ -130,6 +130,68 @@ class ChunkedDecoder:
 
 
 
+class TransferProgress:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.total_bytes = 0
+        self.start_time = None
+        self.last_sample_time = None
+        self.last_sample_bytes = 0
+        self.rate = 0.0
+
+    def add(self, nbytes):
+        now = time.monotonic()
+        if self.start_time is None:
+            self.start_time = now
+            self.last_sample_time = now
+            self.last_sample_bytes = 0
+        self.total_bytes += nbytes
+        elapsed = now - self.last_sample_time
+        if elapsed >= 0.5:
+            self.rate = (self.total_bytes - self.last_sample_bytes) / elapsed
+            self.last_sample_time = now
+            self.last_sample_bytes = self.total_bytes
+
+    def snapshot(self):
+        now = time.monotonic()
+        elapsed = (now - self.start_time) if self.start_time else 0.0
+        return self.total_bytes, elapsed, self.rate
+
+
+def format_data_size(num_bytes, decimals=1):
+    if num_bytes < 1024:
+        return f"{int(round(num_bytes))} B"
+    size = float(num_bytes)
+    for unit in ("KiB", "MiB", "GiB", "TiB"):
+        size /= 1024.0
+        if size < 1024:
+            if decimals == 0:
+                return f"{int(round(size))} {unit}"
+            return f"{size:.{decimals}f} {unit}"
+    if decimals == 0:
+        return f"{int(round(size))} PiB"
+    return f"{size:.{decimals}f} PiB"
+
+
+def format_elapsed(seconds):
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_progress_line(total_bytes, elapsed_seconds, rate_bytes_per_second):
+    return (
+        f"{format_data_size(total_bytes)}  "
+        f"{format_elapsed(elapsed_seconds)}  "
+        f"[{format_data_size(rate_bytes_per_second, decimals=0)}/s]"
+    )
+
+
 class NtripClient(object):
     def __init__(self,
                  buffer=5000,
@@ -153,7 +215,8 @@ class NtripClient(object):
                  maxConnectTime=0,
                  GGA=False,
                  HTTP="1.1",
-                 stop_event=None
+                 stop_event=None,
+                 progress_callback=None,
                  ):
         self.buffer=buffer
         self.user=base64.b64encode(bytes(user,'utf-8')).decode("utf-8")
@@ -177,6 +240,7 @@ class NtripClient(object):
         self.GGA=GGA
         self.HTTP=HTTP
         self.stop_event = stop_event
+        self.progress_callback = progress_callback
 
         self.socket=None
 
@@ -403,6 +467,8 @@ class NtripClient(object):
                     def write_stream_data(stream_data):
                         if not stream_data:
                             return
+                        if self.progress_callback:
+                            self.progress_callback(len(stream_data))
                         self.out.write(stream_data)
                         if self.UDP_socket:
                             self.UDP_socket.sendto(stream_data, ('<broadcast>', self.UDP_Port))
@@ -957,7 +1023,7 @@ def print_connection_settings(ntripArgs, config):
     sys.stderr.write("\n".join(output) + "\n\n")
 
 
-def run_client(config, stop_event=None, client_callback=None):
+def run_client(config, stop_event=None, client_callback=None, progress_callback=None, progress_only=False):
     global maxReconnect
 
     ntripArgs, config = build_ntrip_args(config)
@@ -970,6 +1036,7 @@ def run_client(config, stop_event=None, client_callback=None):
 
     fileOutput = False
     headerFileOutput = False
+    devnullOutput = False
     output_path = optional_string(config["outputFile"])
     header_path = optional_string(config["HeaderFile"])
 
@@ -977,6 +1044,10 @@ def run_client(config, stop_event=None, client_callback=None):
         f = open(Path(output_path).expanduser(), 'wb')
         ntripArgs['out'] = f
         fileOutput = True
+    elif progress_only:
+        f = open(os.devnull, 'wb')
+        ntripArgs['out'] = f
+        devnullOutput = True
     else:
         try:
             stdout = os.fdopen(sys.stdout.fileno(), "wb", closefd=False, buffering=0)
@@ -989,6 +1060,9 @@ def run_client(config, stop_event=None, client_callback=None):
         ntripArgs['headerFile'] = h
         headerFileOutput = True
 
+    if progress_callback:
+        ntripArgs['progress_callback'] = progress_callback
+
     n = NtripClient(**ntripArgs, stop_event=stop_event)
     if client_callback:
         client_callback(n)
@@ -997,7 +1071,7 @@ def run_client(config, stop_event=None, client_callback=None):
     finally:
         if client_callback:
             client_callback(None)
-        if fileOutput:
+        if fileOutput or devnullOutput:
             f.close()
         if headerFileOutput:
             h.close()
@@ -1027,7 +1101,7 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
 
     root = tk.Tk()
     root.title(f"NtripClient - {config_path}")
-    root.geometry("650x920")
+    root.geometry("650x980")
 
     path_var = tk.StringVar(value=str(config_path))
     status_var = tk.StringVar(value="")
@@ -1208,6 +1282,46 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
     refresh_dependent_fields()
 
     fields_frame.columnconfigure(1, weight=1)
+
+    progress_frame = ttk.LabelFrame(root, text="Data transfer", padding=(8, 6))
+    progress_frame.pack(fill="x", padx=12, pady=(0, 4))
+    progress_text_var = tk.StringVar(value=format_progress_line(0, 0, 0))
+    ttk.Label(progress_frame, textvariable=progress_text_var).pack(anchor="w")
+    progress_bar = ttk.Progressbar(progress_frame, mode="indeterminate")
+    progress_bar.pack(fill="x", pady=(6, 0))
+    progress_only_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(
+        progress_frame,
+        text="Display progress only",
+        variable=progress_only_var,
+    ).pack(anchor="w", pady=(8, 0))
+
+    transfer_progress = TransferProgress()
+    progress_tick_job = {"id": None}
+
+    def refresh_progress_display():
+        total, elapsed, rate = transfer_progress.snapshot()
+        progress_text_var.set(format_progress_line(total, elapsed, rate))
+
+    def reset_progress_display():
+        if progress_tick_job["id"] is not None:
+            root.after_cancel(progress_tick_job["id"])
+            progress_tick_job["id"] = None
+        try:
+            progress_bar.stop()
+        except tk.TclError:
+            pass
+        transfer_progress.reset()
+        refresh_progress_display()
+
+    def schedule_progress_tick():
+        refresh_progress_display()
+        if client_state["thread"] and client_state["thread"].is_alive():
+            progress_tick_job["id"] = root.after(500, schedule_progress_tick)
+
+    def on_progress(nbytes):
+        transfer_progress.add(nbytes)
+        root.after(0, refresh_progress_display)
 
     controls = ttk.Frame(root, padding=(12, 0, 12, 12))
     controls.pack(fill="x")
@@ -1407,13 +1521,22 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
         client_state["event"] = stop_event
         start_button.configure(text="Stop", state="normal")
         status_var.set("Client running...")
+        reset_progress_display()
+        progress_bar.start(12)
+        schedule_progress_tick()
 
         def set_client(client):
             client_state["client"] = client
 
         def worker():
             try:
-                run_client(collected, stop_event=stop_event, client_callback=set_client)
+                run_client(
+                    collected,
+                    stop_event=stop_event,
+                    client_callback=set_client,
+                    progress_callback=on_progress,
+                    progress_only=progress_only_var.get(),
+                )
                 root.after(0, lambda: status_var.set("Client stopped."))
             except SystemExit as exc:
                 code = exc.code
@@ -1430,6 +1553,14 @@ def run_gui(config_path=DEFAULT_CONFIG_PATH):
                     root.after(0, lambda: status_var.set("Client stopped with an error."))
             finally:
                 def reset_start_button():
+                    if progress_tick_job["id"] is not None:
+                        root.after_cancel(progress_tick_job["id"])
+                        progress_tick_job["id"] = None
+                    try:
+                        progress_bar.stop()
+                    except tk.TclError:
+                        pass
+                    refresh_progress_display()
                     client_state["event"] = None
                     client_state["client"] = None
                     client_state["thread"] = None
