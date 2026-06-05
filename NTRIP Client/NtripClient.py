@@ -32,7 +32,7 @@ from pprint import pprint
 import argparse
 
 
-version=2.1
+version=2.2
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 DEFAULT_CONFIG_PATH = Path.home() / "ntripclient.ntrip"
 LAST_CONFIG_PATH_FILE = Path.home() / ".ntripclient-last.json"
@@ -944,7 +944,9 @@ def read_source_table(config):
 
 
 def write_source_table_exchange(request, response, config):
-    if not bool_value(config.get("headerOutput", False)):
+    header_output = bool_value(config.get("headerOutput", False))
+    verbose = bool_value(config.get("verbose", False))
+    if not header_output and not verbose:
         return
 
     exchange = f">>> Source table request\n{request}\n<<< Source table response\n{response}"
@@ -952,7 +954,7 @@ def write_source_table_exchange(request, response, config):
         exchange += "\n"
 
     header_path = optional_string(config.get("HeaderFile"))
-    if header_path:
+    if header_output and header_path:
         with open(Path(header_path).expanduser(), "w", encoding="utf-8") as header_file:
             header_file.write(exchange)
         return
