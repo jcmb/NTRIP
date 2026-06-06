@@ -192,6 +192,11 @@ def format_progress_line(total_bytes, elapsed_seconds, rate_bytes_per_second):
     )
 
 
+def log_remote_connection_closed(verbose):
+    if verbose:
+        sys.stderr.write(f"{datetime.datetime.now()} Remote closed the HTTP/TCP connection\n")
+
+
 class NtripClient(object):
     def __init__(self,
                  buffer=5000,
@@ -370,6 +375,7 @@ class NtripClient(object):
                             raise
 
                         if not casterResponse:
+                            log_remote_connection_closed(self.verbose)
                             break
 
                         header_buffer.extend(casterResponse)
@@ -492,7 +498,9 @@ class NtripClient(object):
 #                            time.sleep(0.01)
 #                            print("\nSleep Finished. " + str(datetime.datetime.now()))
                             data=self.socket.recv(self.buffer)
-                            if self.verbose:
+                            if not data:
+                                log_remote_connection_closed(self.verbose)
+                            elif self.verbose:
                                sys.stderr.write("%s Data received: %s \n" % (datetime.datetime.now(), len(data)))
 
                             if decoder:
@@ -528,6 +536,8 @@ class NtripClient(object):
                             data=False
 
                         if decoder and decoder.done:
+                            if data:
+                                log_remote_connection_closed(self.verbose)
                             data=False
 
                     if decoder and not decoder.done and not decode_failed and not self.should_stop():
@@ -912,6 +922,7 @@ def read_source_table(config):
         while len(response) < 2 * 1024 * 1024:
             chunk = ntrip_socket.recv(4096)
             if not chunk:
+                log_remote_connection_closed(bool_value(config.get("verbose", False)))
                 break
             response.extend(chunk)
             if b"ENDSOURCETABLE" in response:
