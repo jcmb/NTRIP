@@ -1,7 +1,6 @@
 name: Build NtripClient Binary
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
 
@@ -17,14 +16,18 @@ jobs:
             artifact_name: ntripclient-linux-amd64
             binary_name: ntripclient
             artifact_path: dist/ntripclient
+            apt_packages: binutils
           - platform: arm64
             artifact_name: ntripclient-linux-arm64
             binary_name: ntripclient
             artifact_path: dist/ntripclient
+            apt_packages: binutils
           - platform: arm/v7
             artifact_name: ntripclient-linux-arm32
             binary_name: ntripclient
             artifact_path: dist/ntripclient
+            # No PyInstaller wheel for armhf; pip builds bootloader from source (needs gcc).
+            apt_packages: binutils gcc libc6-dev zlib1g-dev
 
     steps:
       - name: Checkout
@@ -40,7 +43,7 @@ jobs:
             -v "$PWD:/work" \
             -w /work \
             python:3.12-slim \
-            sh -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --no-install-recommends binutils && python -m pip install --upgrade pip pyinstaller && pyinstaller --onefile --name "${{ matrix.binary_name }}" "NTRIP Client/NtripClient.py"'
+            sh -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --no-install-recommends ${{ matrix.apt_packages }} && python -m pip install --upgrade pip pyinstaller && pyinstaller --onefile --strip --name "${{ matrix.binary_name }}" "NTRIP Client/NtripClient.py"'
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -66,7 +69,7 @@ jobs:
         run: python -m pip install --upgrade pip pyinstaller
 
       - name: Build binary
-        run: pyinstaller --onefile --name ntripclient "NTRIP Client/NtripClient.py"
+        run: pyinstaller --onefile --strip --name ntripclient "NTRIP Client/NtripClient.py"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -92,7 +95,7 @@ jobs:
         run: python -m pip install --upgrade pip pyinstaller
 
       - name: Build binary
-        run: pyinstaller --onefile --name ntripclient "NTRIP Client/NtripClient.py"
+        run: pyinstaller --onefile --strip --name ntripclient "NTRIP Client/NtripClient.py"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
