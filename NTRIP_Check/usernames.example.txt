@@ -1,0 +1,9 @@
+# Mixed file format:
+# - username
+# - username:password
+# Blank lines and comments are ignored.
+example_user_1
+example_user_2:example_password_2
+
+# username-only lines use shared CLI/password-file/prompt password
+example_user_3
