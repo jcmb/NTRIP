@@ -383,8 +383,13 @@ def write_html_report(
         )
 
     status_counts = Counter(result.status for result in results)
+    total_results = len(results)
     summary_rows = "".join(
-        f"<tr><td>{escape(status)}</td><td>{count}</td></tr>"
+        "<tr>"
+        f"<td>{escape(status)}</td>"
+        f"<td>{count}</td>"
+        f"<td>{(count / total_results * 100) if total_results else 0:.1f}%</td>"
+        "</tr>"
         for status, count in sorted(status_counts.items())
     )
     expected_meta = (
@@ -455,6 +460,7 @@ def write_html_report(
       <tr>
         <th>Status</th>
         <th data-type="number">Count</th>
+        <th data-type="number">% of Total</th>
       </tr>
     </thead>
     <tbody>
