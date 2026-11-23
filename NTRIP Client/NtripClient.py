@@ -32,7 +32,7 @@ from pprint import pprint
 import argparse
 
 
-version=2.2
+version=2.3
 useragent="NTRIP JCMBsoftPythonClient/%.1f" % version
 DEFAULT_CONFIG_PATH = Path.home() / "ntripclient.ntrip"
 LAST_CONFIG_PATH_FILE = Path.home() / ".ntripclient-last.json"
@@ -224,8 +224,8 @@ class NtripClient(object):
                  progress_callback=None,
                  ):
         self.buffer=buffer
-        self.user=base64.b64encode(bytes(user,'utf-8')).decode("utf-8")
-#        print(self.user)
+        credentials = optional_string(user)
+        self.user = base64.b64encode(bytes(credentials, 'utf-8')).decode("utf-8") if credentials else None
         self.out=out
         self.port=port
         self.caster=caster
@@ -294,10 +294,11 @@ class NtripClient(object):
 
     def getMountPointBytes(self):
         if self.HTTP=="0.9":
-            mountPointString = "GET %s \r\nUser-Agent: %s\r\nAuthorization: Basic %s\r\n" % (self.mountpoint, useragent, self.user)
+            mountPointString = "GET %s \r\nUser-Agent: %s\r\n" % (self.mountpoint, useragent)
         else:
-            mountPointString = "GET %s HTTP/%s\r\nUser-Agent: %s\r\nAuthorization: Basic %s\r\n" % (self.mountpoint, self.HTTP, useragent, self.user)
-#        mountPointString = "GET %s HTTP/1.1\r\nUser-Agent: %s\r\n" % (self.mountpoint, useragent)
+            mountPointString = "GET %s HTTP/%s\r\nUser-Agent: %s\r\n" % (self.mountpoint, self.HTTP, useragent)
+        if self.user:
+            mountPointString += "Authorization: Basic %s\r\n" % self.user
         if self.host or self.V2:
            hostString = "Host: %s:%i\r\n" % (self.caster,self.port)
            mountPointString+=hostString
@@ -833,7 +834,10 @@ def build_ntrip_args(config):
     else:
         if not config["caster"]:
             raise ValueError("A caster is required unless --org is provided")
-        ntripArgs["user"] = config["user"] + ":" + config["password"]
+        if config["user"] or config["password"]:
+            ntripArgs["user"] = config["user"] + ":" + config["password"]
+        else:
+            ntripArgs["user"] = ""
         ntripArgs["caster"] = config["caster"]
         ntripArgs["port"] = 2101 if config["port"] is None else config["port"]
 
@@ -904,7 +908,9 @@ def get_source_table_request_bytes(ntripArgs):
         request = "GET / HTTP/%s\r\n" % ntripArgs["HTTP"]
 
     request += "User-Agent: %s\r\n" % useragent
-    request += "Authorization: Basic %s\r\n" % base64.b64encode(bytes(ntripArgs["user"], "utf-8")).decode("utf-8")
+    credentials = optional_string(ntripArgs.get("user"))
+    if credentials:
+        request += "Authorization: Basic %s\r\n" % base64.b64encode(bytes(credentials, "utf-8")).decode("utf-8")
     request += "Host: %s:%i\r\n" % (ntripArgs["caster"], ntripArgs["port"])
     if ntripArgs["V2"]:
         request += "Ntrip-Version: Ntrip/2.0\r\n"
